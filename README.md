@@ -16,6 +16,21 @@ Without Docker (you need a running Postgres):
 
 Open http://localhost:3000.
 
+## Lint and tests
+
+    npm run lint         # ESLint
+    npm run typecheck    # TypeScript
+    npm test             # Jest
+
+The tests delete all rows in the test database. They use `TEST_DATABASE_URL`
+(default: `postgres://app:app@localhost:5432/app_test`), never `DATABASE_URL`.
+With Docker Compose running, make the test database once:
+
+    docker compose exec db createdb -U app app_test
+
+GitHub Actions (`.github/workflows/ci.yml`) runs lint, type check, tests (with a
+Postgres service) and a Docker build on each push to `master` and on each pull request.
+
 ## Deploy on Render
 
 1. Push this folder to a GitHub repository.
