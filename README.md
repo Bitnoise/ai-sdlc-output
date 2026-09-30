@@ -6,16 +6,17 @@ A single-page, browser-only web app for analyzing which delivery vans in a fleet
 
 The application is a single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles.
 
-**Serving:** the deployed service is a small static server. `GET /` returns the built single-page app (`dist/client/index.html`, titled "Which Vans Go Electric?") and its assets; `/health` and `/version` exist only for the deploy workflow. The page shows the "Which Vans Go Electric?" heading and two footer lines — "Every van is checked against every EV model for range, payload and 5-year saving." and "Results include a data quality report, check figures, the shortlist, assumptions and CSV downloads." — straight from the server HTML; the browser script then renders Screen 1 above the footer. The server never receives uploaded files or results.
+**Serving:** the deployed service is a small static server. `GET /` returns the built single-page app (`dist/client/index.html`, titled "Which Vans Go Electric?") and its assets; `/health` and `/version` exist only for the deploy workflow. The page shows the "Which Vans Go Electric?" heading and three footer lines — "Every van is checked against every EV model for range, payload and 5-year saving.", "Results include a data quality report, check figures, the shortlist, assumptions and CSV downloads." and "Vendor exports are accepted as delivered: several trip files are combined and column names are mapped." — straight from the server HTML; the browser script then renders Screen 1 above the footer. The server never receives uploaded files or results.
 
 **User Workflow:**
-1. User opens the app and sees Screen 1 — a parameters form with all fields pre-filled with documented defaults (e.g. diesel price 5.20 PLN/L, Volta Cargo S and Volta Cargo L rows) and the `vans.csv` / `trips.csv` upload inputs, with Run disabled
-2. User uploads van register (`vans.csv`) and trip history (`trips.csv`); the app validates CSV headers and shows clear errors if columns are missing or data is unparseable. After `trips.csv` is accepted, the export length in weeks is auto-derived from the first and last trip date, rounded up to whole weeks (13 for the sample export), with the hint "auto-derived from trip dates"; the user can still edit it
-3. Run button is enabled only when both files are valid and uploaded
+1. User opens the app and sees Screen 1 — a parameters form with all fields pre-filled with documented defaults (e.g. diesel price 5.20 PLN/L, Volta Cargo S and Volta Cargo L rows) and the van register / trips upload inputs, with Run disabled
+2. User uploads the van register (e.g. `vans_latest.csv`) and one or more trip exports (e.g. `trips.csv` and `trips_latest.csv`, selected together or one after another). Files are accepted as the vendor delivers them: van headers `model` / `ownership` are read as `diesel_model` / `owned_or_leased` and the trip header `odo_km` as `odometer_km`, values unchanged. A new register upload replaces the previous one; trip files add up (re-selecting a file with the same name replaces it; **Clear trip files** empties the list). The app then checks van columns first, trip columns per file, usable distances, and — only once the register loaded with all its columns — unknown van IDs, re-checking whenever the register, the trip files or the alias table change. Each file shows its errors by name. The export length in weeks is auto-derived from the first and last date across all trip files, rounded up to whole weeks (15 for 15 Jun–27 Sep), with the hint "auto-derived from trip dates"; the user can still edit it
+3. Run button is enabled only when a register and at least one trip file are uploaded and no file reports an error
 4. User clicks Run, which:
-   - Parses CSVs with PapaParse (header: true, skipEmptyLines: true)
-   - Applies van ID alias table to remap trip van_ids before validation (e.g., P-17 → P-17B); an alias applies only when its target is in the van register
-   - Cleans trip data: deduplicates rows whose columns are all identical, uses odometer_km when it is a number above 0, otherwise falls back to gps_km (logged as a repair), and drops the row if both are unusable; a blank gps_km alone is fine
+   - Parses CSVs with PapaParse (header: true, skipEmptyLines: true) and maps vendor headers
+   - Combines all trip files into one history (one column order; each row remembers its file and line)
+   - Applies van ID alias table to remap trip van_ids before validation (default P-17 → P-17B: the older `trips.csv` still says P-17 for the van the register now lists as P-17B); an alias applies only when its target is in the van register
+   - Cleans trip data: deduplicates rows whose columns are all identical (also across files), uses odometer_km when it is a number above 0, otherwise falls back to gps_km (logged as a repair), and drops the row if both are unusable; a blank gps_km alone is fine
    - Calls the calculation engine (analyzeFleet) with all parameters from the form
    - Navigates to Screen 2 with results
 5. User can modify parameters and re-run analysis, or download results and assumptions
@@ -28,16 +29,16 @@ The application is a single-page, browser-only web app for analyzing which deliv
 - **Range Rule**: 95th percentile, usable WLTP share 60%, midday top-up off by default.
 - **Financing**: 5-year evaluation horizon, grant 30% of purchase (max 10 EVs), lease exit fee 3 months, "lease ends soon" 12-month window, analysis date (today by default).
 - **Exclusions & Data Cleaning**: Toggle to exclude refrigerated vans, export length in weeks (auto-derived, default 13), van ID alias table for remapping (default P-17 → P-17B).
-- **File Uploads**: Validate `vans.csv` and `trips.csv` headers and types; show clear errors for missing columns, unparseable numbers, and unknown van IDs in trips. Run button disabled until both files valid.
+- **File Uploads**: "Upload vans.csv (van register)" (one file, shown with its van count) and "Upload trips CSV(s)" (several files, each shown with its row count). Vendor headers are mapped before checking; clear errors for missing columns, unusable distances, and unknown van IDs in trips. Run button disabled until the register and the trip files are valid.
 - **Settings**: Save all parameters as `settings.json`; load it to restore parameters for next quarter's analysis. A file that is not valid settings JSON shows an error and leaves the form unchanged.
 
 **Screen 2 — Results** displays the analysis output. Everything on it, and every download, uses the parameters in effect when Run was clicked:
-- **Data Quality Report**: rows read, exact duplicates removed, rows remapped by alias (with the alias pairs), distances repaired (count plus line / van / date / raw odometer → GPS km for each), blank `gps_km` (rows kept), rows dropped (count plus line and reason for each), unknown van IDs, and the export length in weeks.
+- **Data Quality Report**: van register (file name and van count), trip files (name and row count of each), columns renamed (e.g. "vans_latest.csv: model → diesel_model, ownership → owned_or_leased; trips_latest.csv: odo_km → odometer_km", or "none"), rows read, exact duplicates removed, rows remapped by alias (with the alias pairs), distances repaired (count plus file and line / van / date / raw odometer → GPS km for each), blank `gps_km` (rows kept), rows dropped (count plus file, line and reason for each), unknown van IDs, and the export length in weeks with the combined date span (e.g. "15 weeks (2026-06-15 to 2026-09-27)").
 - **Check Figures**: Vans assessed, trips counted (after deduplication and cleaning), total km — plain integers without thousands separators (38 / 2777 / 344952 for the full sample export).
 - **Per-Van Analysis Table**: All vans in register order with depot, refrigerated flag, owned/leased, lease end date, P95 daily km, max day km, max load carried and annualized km; then for each EV model three columns — "range OK", "payload OK" and "5-yr saving (PLN)"; then the best EV model, the status ("Shortlisted #rank" or "Excluded") and the exclusion reason. When midday top-up is on, a note above the table says "Midday top-up on: range checked per route, not per day".
 - **Shortlist Table**: Ranked recommendations (1 to N) showing van ID, EV model, EV depot (North, including re-based South vans), range check km, annual km, annual fuel saving in PLN, 5-year total saving in PLN, and one-line reason (e.g., "Owned North van, P95 day 145 km fits 60% of Volta Cargo S range, saves 21,710 PLN over 5 years"; re-based vans read "South van re-based to North"). A totals row gives the number of recommended vans, the summed annual fuel saving and the summed horizon saving; an empty shortlist reads "No van qualifies".
-- **Assumptions List**: one human-readable line per business rule, generated from the run's parameters (cleaning, alias pairs, odometer/GPS rule, what a day is or "Midday top-up allowed: range checked per route, not per day", percentile, annualisation weeks, refrigerated toggle, usable WLTP share, depot and charging caps, costs and tariffs, grant share and cap, lease exit fee and window with the analysis date, horizon, shortlist order), plus the extra assumptions (grant for re-based South vans, leased EVs never proposed, double-route days summed, odometer over GPS, summer export 15 Jun–13 Sep with no seasonal uplift, vans keep their routes) and the open questions for Ewa.
-- **Downloads**: `shortlist.csv` (UTF-8, comma delimiter, dot decimals, no thousands separators, text with commas quoted), `summary.csv` (`figure,value` rows in order vans_assessed, trips_counted, total_km, recommended_count, annual_fuel_saving_pln, saving_pln, saving_basis; saving_basis states the horizon and grant %), `assumptions.md` (the assumptions list as `# Assumptions` bullets), `settings.json` (parameters of the run, loadable next quarter) and `per-van.csv` (all vans with metrics, per-model checks, status and reason).
+- **Assumptions List**: one human-readable line per business rule, generated from the run's parameters (trip exports combined into one history and the latest register replacing earlier ones, vendor headers read as the form's names, each alias as a decision such as "P-17 in the older trips export is the van registered as P-17B", cleaning, alias pairs, odometer/GPS rule, what a day is or "Midday top-up allowed: range checked per route, not per day", percentile, annualisation weeks, refrigerated toggle, usable WLTP share, depot and charging caps, costs and tariffs, grant share and cap, lease exit fee and window with the analysis date, horizon, shortlist order), plus the extra assumptions (grant for re-based South vans, leased EVs never proposed, double-route days summed, odometer over GPS, summer export 15 Jun–13 Sep with no seasonal uplift, vans keep their routes) and the open questions for Ewa.
+- **Downloads**: `shortlist.csv` (UTF-8, comma delimiter, dot decimals, no thousands separators, text with commas quoted), `summary.csv` (`figure,value` rows in order vans_assessed, trips_counted, total_km, recommended_count, annual_fuel_saving_pln, saving_pln, saving_basis; saving_basis states the horizon and grant %), `assumptions.md` (the assumptions list as `# Assumptions` bullets), `settings.json` (parameters of the run, loadable next quarter), `per-van.csv` (all vans with metrics, per-model checks, status and reason), and "Download normalized vans.csv" / "Download normalized trips.csv": copies of the uploaded register and the combined trip files that pass the upload form's rules — columns named `diesel_model`, `owned_or_leased`, `odometer_km`, trip van IDs written alias-resolved (P-17 → P-17B), every other value unchanged.
 - **Back to Parameters**: Button to return to Screen 1, preserving parameters and allowing re-runs with different data or settings.
 
 **Calculation Engine** (all client-side, no backend calls):
@@ -61,11 +62,11 @@ The engine (`src/engine.ts`) implements all business rules in pure TypeScript an
 ### Rerun next quarter
 
 1. Open the app and click **Load Settings**; pick the `settings.json` saved from the last run.
-2. Upload the new `vans.csv` and `trips.csv` (same columns as the sample files). Fix any upload errors — missing columns, unusable distances, or van IDs that are neither in the register nor covered by an alias. A renamed plate needs a new row in the **Van ID Aliases** table.
-3. Check **Export Length (weeks)**: it is re-derived from the new trip dates; correct it if the export has gaps at the start or end.
+2. Upload the latest van register and all trip exports that belong to the period (e.g. `trips.csv` + `trips_latest.csv`); vendor headers (`model`, `ownership`, `odo_km`) are fine as delivered. Fix any upload errors — missing columns, unusable distances, or van IDs that are neither in the register nor covered by an alias. A renamed plate needs a new row in the **Van ID Aliases** table.
+3. Check **Export Length (weeks)**: it is re-derived from the combined trip dates; correct it if the exports have gaps at the start or end.
 4. Check the **Analysis Date** (loaded settings keep the old date) and any changed prices or offers.
 5. Click **Run Analysis**. Read the data quality report first (duplicates, alias remaps, repaired distances, dropped rows, unknown IDs), then the check figures.
-6. Download `shortlist.csv`, `summary.csv`, `assumptions.md`, `settings.json` (and `per-van.csv` if needed).
+6. Download `shortlist.csv`, `summary.csv`, `assumptions.md`, `settings.json` (and `per-van.csv` or the normalized `vans.csv` / `trips.csv` if needed).
 
 ### Parameters
 
@@ -87,7 +88,7 @@ The engine (`src/engine.ts`) implements all business rules in pure TypeScript an
 | "Lease ends soon" window | leases ending within this many months after the analysis date pay no exit fee | 12 |
 | Analysis date | reference date for the lease window | today |
 | Exclude refrigerated vans | fridge vans are out for year 1 | on |
-| Export length (weeks) | used to annualise km (total km / weeks × 52) | derived from trip dates (13 for the sample) |
+| Export length (weeks) | used to annualise km (total km / weeks × 52) | derived from the combined trip dates (13 for `trips.csv` alone, 15 with `trips_latest.csv`) |
 | Van ID aliases | trip van IDs remapped to register IDs | P-17 → P-17B |
 
 ## Tech Stack
@@ -133,7 +134,7 @@ All three checks are required before merging: `npm run lint`, `npm run typecheck
 
 ### Running Tests
 
-The engine is fully unit-tested. Tests use the fixtures `test/fixtures/vans.csv` (38-van register) and `test/fixtures/trips.csv`, plus small synthetic fleets for single rules.
+The engine is fully unit-tested. Tests use the fixtures `test/fixtures/vans.csv` (38-van register) and `test/fixtures/trips.csv`, the vendor-format `test/fixtures/vans_latest.csv` (40 vans, P-17 registered as P-17B, new P-39 and P-40) and `test/fixtures/trips_latest.csv` (short 14–27 Sep excerpt with `odo_km`), plus small synthetic fleets for single rules. `test/ingest.test.ts` covers header mapping, combining trip files (cross-file duplicates, file/line sources), unknown-ID checks with and without the P-17 → P-17B alias, the combined 15-week span and the normalized CSV copies.
 
 ```bash
 npm test

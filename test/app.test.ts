@@ -29,6 +29,13 @@ describe("GET /", () => {
     expect(res.text).toContain("Results include a data quality report, check figures, the shortlist, assumptions and CSV downloads.");
   });
 
+  it("states that vendor exports are accepted and trip files are combined", async () => {
+    const res = await request(app).get("/");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("several trip files are combined");
+  });
+
   describe("with a built client", () => {
     let dir: string;
 

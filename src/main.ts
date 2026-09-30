@@ -1,4 +1,5 @@
-import { analyzeFleet, cleanTrips, deriveExportWeeks, formatCsvValue, generateAssumptions, generateAssumptionsMd, resolveVanId, usableKm, type AnalysisParams, type DieselModel, type EVModel, type AnalysisResult, type CleaningResult, type Van, generateShortlistCsv, generateSummaryCsv } from './engine';
+import { analyzeFleet, cleanTrips, deriveExportWeeks, formatCsvValue, generateAssumptions, generateAssumptionsMd, usableKm, type AnalysisParams, type DieselModel, type EVModel, type AnalysisResult, type CleaningResult, type Van, generateShortlistCsv, generateSummaryCsv } from './engine';
+import { combineTripFiles, findUnknownVanIds, missingColumns, normalizedTripsCsv, normalizedVansCsv, normalizeHeaders, REQUIRED_TRIP_COLUMNS, REQUIRED_VAN_COLUMNS, TRIP_HEADER_ALIASES, tripDateSpan, VAN_HEADER_ALIASES, type HeaderRename } from './ingest';
 import Papa from 'papaparse';
 
 interface AppState {
@@ -24,8 +25,6 @@ interface AppState {
   excludeRefrigerated: boolean;
   aliasList: Array<{ from: string; to: string }>;
   exportWeeks: number;
-  vansFile: File | null;
-  tripsFile: File | null;
   analysisResult: AnalysisResult | null;
   cleaningResult: CleaningResult | null;
   lastParams: AnalysisParams | null;
@@ -39,6 +38,23 @@ interface UploadError {
 
 interface ParsedRow {
   [key: string]: unknown;
+}
+
+/** One uploaded CSV after header mapping; parseError is set when PapaParse failed. */
+interface UploadedCsv {
+  name: string;
+  rows: ParsedRow[];
+  renamed: HeaderRename[];
+  parseError?: string;
+}
+
+/** What Screen 2 needs from the uploads used for the run. */
+interface RunInputs {
+  vans: UploadedCsv;
+  tripFiles: UploadedCsv[];
+  combinedTrips: ParsedRow[];
+  vanIds: Set<string>;
+  aliasMap: Map<string, string>;
 }
 
 const DEFAULT_STATE: AppState = {
@@ -71,8 +87,6 @@ const DEFAULT_STATE: AppState = {
   excludeRefrigerated: true,
   aliasList: [{ from: 'P-17', to: 'P-17B' }],
   exportWeeks: 13,
-  vansFile: null,
-  tripsFile: null,
   analysisResult: null,
   cleaningResult: null,
   lastParams: null,
@@ -81,8 +95,10 @@ const DEFAULT_STATE: AppState = {
 
 const appState: AppState = JSON.parse(JSON.stringify(DEFAULT_STATE));
 let uploadErrors: UploadError[] = [];
-let parsedVans: ParsedRow[] = [];
-let parsedTrips: ParsedRow[] = [];
+// The latest van register replaces earlier ones; trip files accumulate and are combined.
+let vansUpload: UploadedCsv | null = null;
+let tripFiles: UploadedCsv[] = [];
+let lastRunInputs: RunInputs | null = null;
 let exportWeeksAutoDerived = false;
 let settingsError = '';
 
@@ -150,113 +166,91 @@ function buildSettings() {
   };
 }
 
-function parseVansCsv(file: File): Promise<void> {
+/** Parses a CSV and maps vendor headers to the form's column names before any check. */
+function parseCsv(file: File, aliases: Record<string, string>): Promise<UploadedCsv> {
   return new Promise((resolve) => {
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
       complete: (results: { data: ParsedRow[] }) => {
-        const errors: string[] = [];
-        const requiredHeaders = ['van_id', 'diesel_model', 'depot', 'owned_or_leased', 'lease_end', 'monthly_lease_pln', 'refrigerated'];
-
-        if (results.data.length === 0) {
-          errors.push('No data rows found');
-        } else {
-          const firstRow = results.data[0];
-          for (const header of requiredHeaders) {
-            if (!(header in firstRow)) {
-              errors.push(`Missing column: ${header}`);
-            }
-          }
-        }
-
-        if (errors.length > 0) {
-          uploadErrors.push({ file: file.name, error: errors.join('; ') });
-        } else {
-          parsedVans = results.data;
-          appState.vansFile = file;
-        }
-        resolve();
+        const { rows, renamed } = normalizeHeaders(results.data, aliases);
+        resolve({ name: file.name, rows, renamed });
       },
       error: (error: { message: string }) => {
-        uploadErrors.push({ file: file.name, error: error.message });
-        resolve();
+        resolve({ name: file.name, rows: [], renamed: [], parseError: error.message });
       },
     });
   });
 }
 
-function parseTripsCsv(file: File): Promise<void> {
-  return new Promise((resolve) => {
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results: { data: ParsedRow[] }) => {
-        const errors: string[] = [];
-        const requiredHeaders = ['date', 'van_id', 'odometer_km', 'gps_km', 'max_load_kg'];
+function aliasMapFromForm(): Map<string, string> {
+  return new Map(appState.aliasList.map((a) => [a.from.trim(), a.to.trim()]));
+}
 
-        if (results.data.length === 0) {
-          errors.push('No data rows found');
-        } else {
-          const firstRow = results.data[0];
-          for (const header of requiredHeaders) {
-            if (!(header in firstRow)) {
-              errors.push(`Missing column: ${header}`);
-            }
+function registerVanIds(vans: UploadedCsv): Set<string> {
+  return new Set(vans.rows.map((v) => String(v.van_id ?? '').trim()));
+}
+
+/**
+ * Rebuilds the upload errors: van columns first, then trip columns per file, then distances.
+ * Unknown van IDs are checked only once the register loaded with all its columns.
+ */
+function validateUploads(): void {
+  const errors: UploadError[] = [];
+
+  let vanIds: Set<string> | null = null;
+  if (vansUpload) {
+    const problems = vansUpload.parseError
+      ? [vansUpload.parseError]
+      : vansUpload.rows.length === 0
+        ? ['No data rows found']
+        : missingColumns(vansUpload.rows, REQUIRED_VAN_COLUMNS).map((c) => `Missing column: ${c}`);
+    if (problems.length > 0) {
+      errors.push({ file: vansUpload.name, error: problems.join('; ') });
+    } else {
+      vanIds = registerVanIds(vansUpload);
+    }
+  }
+
+  const aliasMap = aliasMapFromForm();
+  for (const tripFile of tripFiles) {
+    const problems: string[] = [];
+    if (tripFile.parseError) {
+      problems.push(tripFile.parseError);
+    } else if (tripFile.rows.length === 0) {
+      problems.push('No data rows found');
+    } else {
+      problems.push(...missingColumns(tripFile.rows, REQUIRED_TRIP_COLUMNS).map((c) => `Missing column: ${c}`));
+      if (problems.length === 0) {
+        // Same rule as the engine: odometer if > 0, else GPS as fallback.
+        tripFile.rows.forEach((row, i) => {
+          if (usableKm(row.odometer_km) === null && usableKm(row.gps_km) === null) {
+            problems.push(`Row ${i + 2}: both odometer_km and gps_km are invalid or missing`);
           }
+        });
+        if (vanIds) {
+          const unknown = findUnknownVanIds(tripFile.rows, vanIds, aliasMap);
+          if (unknown.length > 0) problems.push(`Unknown van IDs in trips: ${unknown.join(', ')}`);
         }
+      }
+    }
+    if (problems.length > 0) errors.push({ file: tripFile.name, error: problems.join('; ') });
+  }
 
-        if (errors.length > 0) {
-          uploadErrors.push({ file: file.name, error: errors.join('; ') });
-        } else {
-          // Validate numeric columns and van IDs
-          const vanIds = new Set(parsedVans.map((v) => v.van_id?.toString().trim() ?? ''));
-          const aliasMap = new Map(appState.aliasList.map(a => [a.from, a.to]));
-          const unknownVanIds = new Set<string>();
+  uploadErrors = errors;
+}
 
-          for (let i = 0; i < results.data.length; i++) {
-            const row = results.data[i];
-            const vanId = row.van_id?.toString().trim() ?? '';
-            const remappedId = resolveVanId(vanId, aliasMap, vanIds);
-
-            if (!vanIds.has(remappedId)) {
-              unknownVanIds.add(vanId ?? '');
-            }
-
-            // Same rule as the engine: odometer if > 0, else GPS as fallback.
-            if (usableKm(row.odometer_km) === null && usableKm(row.gps_km) === null) {
-              errors.push(`Row ${i + 2}: both odometer_km and gps_km are invalid or missing`);
-            }
-          }
-
-          if (unknownVanIds.size > 0) {
-            errors.push(`Unknown van IDs in trips: ${Array.from(unknownVanIds).join(', ')}`);
-          }
-
-          if (errors.length > 0) {
-            uploadErrors.push({ file: file.name, error: errors.join('; ') });
-          } else {
-            parsedTrips = results.data;
-            appState.tripsFile = file;
-            const weeks = deriveExportWeeks(results.data);
-            if (weeks > 0) {
-              appState.exportWeeks = weeks;
-              exportWeeksAutoDerived = true;
-            }
-          }
-        }
-        resolve();
-      },
-      error: (error: { message: string }) => {
-        uploadErrors.push({ file: file.name, error: error.message });
-        resolve();
-      },
-    });
-  });
+/** Export weeks follow the combined date span of all trip files. */
+function deriveWeeksFromTripFiles(): void {
+  const weeks = deriveExportWeeks(tripFiles.flatMap((f) => f.rows));
+  if (weeks > 0) {
+    appState.exportWeeks = weeks;
+    exportWeeksAutoDerived = true;
+  }
 }
 
 function areFilesValid(): boolean {
-  return appState.vansFile !== null && appState.tripsFile !== null && uploadErrors.length === 0;
+  return vansUpload !== null && tripFiles.length > 0 && uploadErrors.length === 0;
 }
 
 function renderForm(): void {
@@ -466,14 +460,15 @@ function renderForm(): void {
           <h2>Data Files</h2>
           <div class="form-row">
             <div class="form-col">
-              <label>Upload vans.csv:</label>
+              <label>Upload vans.csv (van register):</label>
               <input type="file" id="vansUpload" accept=".csv" />
-              ${appState.vansFile ? `<span class="file-ok">✓ ${appState.vansFile.name}</span>` : ''}
+              ${vansUpload ? `<span class="file-ok">✓ ${escapeHtml(vansUpload.name)} (${vansUpload.rows.length} vans)</span>` : ''}
             </div>
             <div class="form-col">
-              <label>Upload trips.csv:</label>
-              <input type="file" id="tripsUpload" accept=".csv" />
-              ${appState.tripsFile ? `<span class="file-ok">✓ ${appState.tripsFile.name}</span>` : ''}
+              <label>Upload trips CSV(s):</label>
+              <input type="file" id="tripsUpload" accept=".csv" multiple />
+              ${tripFiles.map((f) => `<span class="file-ok">✓ ${escapeHtml(f.name)} (${f.rows.length} rows)</span>`).join('')}
+              ${tripFiles.length > 0 ? '<button type="button" class="btn-secondary" id="clearTripsBtn">Clear trip files</button>' : ''}
             </div>
           </div>
           ${errorsHtml ? `<div class="errors">${errorsHtml}</div>` : ''}
@@ -665,19 +660,25 @@ function attachEventListeners(): void {
       const toInput = row.querySelector('.alias-to') as HTMLInputElement;
       const removeBtn = row.querySelector('.btn-remove') as HTMLButtonElement;
 
+      // Aliases decide which trip van IDs are known, so the uploads are re-checked.
       fromInput?.addEventListener('change', (e) => {
         if (appState.aliasList[i]) {
           appState.aliasList[i].from = (e.target as HTMLInputElement).value;
+          validateUploads();
+          renderForm();
         }
       });
       toInput?.addEventListener('change', (e) => {
         if (appState.aliasList[i]) {
           appState.aliasList[i].to = (e.target as HTMLInputElement).value;
+          validateUploads();
+          renderForm();
         }
       });
       removeBtn?.addEventListener('click', (e) => {
         e.preventDefault();
         appState.aliasList.splice(i, 1);
+        validateUploads();
         renderForm();
       });
     });
@@ -706,19 +707,34 @@ function attachEventListeners(): void {
   document.getElementById('vansUpload')?.addEventListener('change', async (e) => {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (file) {
-      uploadErrors = uploadErrors.filter(err => err.file !== 'vans.csv');
-      await parseVansCsv(file);
+      vansUpload = await parseCsv(file, VAN_HEADER_ALIASES);
+      validateUploads();
       renderForm();
     }
   });
 
   document.getElementById('tripsUpload')?.addEventListener('change', async (e) => {
-    const file = (e.target as HTMLInputElement).files?.[0];
-    if (file) {
-      uploadErrors = uploadErrors.filter(err => err.file !== 'trips.csv');
-      await parseTripsCsv(file);
+    const files = Array.from((e.target as HTMLInputElement).files ?? []);
+    if (files.length > 0) {
+      for (const file of files) {
+        const parsed = await parseCsv(file, TRIP_HEADER_ALIASES);
+        // Re-selecting a file with the same name replaces it instead of adding it twice.
+        const existing = tripFiles.findIndex((f) => f.name === parsed.name);
+        if (existing >= 0) tripFiles[existing] = parsed;
+        else tripFiles.push(parsed);
+      }
+      deriveWeeksFromTripFiles();
+      validateUploads();
       renderForm();
     }
+  });
+
+  document.getElementById('clearTripsBtn')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    tripFiles = [];
+    exportWeeksAutoDerived = false;
+    validateUploads();
+    renderForm();
   });
 
   // Settings
@@ -769,6 +785,7 @@ function attachEventListeners(): void {
         appState.excludeRefrigerated = data.excludeRefrigerated ?? DEFAULT_STATE.excludeRefrigerated;
         appState.aliasList = data.aliasList || DEFAULT_STATE.aliasList;
         appState.exportWeeks = data.exportWeeks ?? DEFAULT_STATE.exportWeeks;
+        validateUploads();
         renderForm();
       }
     };
@@ -785,8 +802,9 @@ function attachEventListeners(): void {
 }
 
 async function runAnalysis(): Promise<void> {
+  if (!vansUpload) return;
   // Parse vans from CSV
-  const vans: Van[] = parsedVans.map((row) => ({
+  const vans: Van[] = vansUpload.rows.map((row) => ({
     vanId: String(row.van_id).trim(),
     dieselModel: String(row.diesel_model).trim(),
     depot: (row.depot === 'North' ? 'North' : 'South') as 'North' | 'South',
@@ -797,12 +815,14 @@ async function runAnalysis(): Promise<void> {
   }));
 
   // Create alias map and van ID set
-  const aliasMap = new Map(appState.aliasList.map(a => [a.from, a.to]));
+  const aliasMap = aliasMapFromForm();
   const vanIds = new Set(vans.map(v => v.vanId));
 
-  // Clean trips
-  const cleaningResult = cleanTrips(parsedTrips as Array<Record<string, unknown>>, vanIds, aliasMap);
+  // Combine all trip files into one history, then clean it
+  const combined = combineTripFiles(tripFiles);
+  const cleaningResult = cleanTrips(combined.rows, vanIds, aliasMap, combined.sources);
   appState.cleaningResult = cleaningResult;
+  lastRunInputs = { vans: vansUpload, tripFiles: [...tripFiles], combinedTrips: combined.rows, vanIds, aliasMap };
 
   // Downloads reflect the parameters of this run, not later form edits.
   const params = buildParams();
@@ -825,7 +845,8 @@ function downloadFile(content: string, filename: string, mimeType: string = 'tex
 
 function renderResults(): void {
   const app = document.getElementById('app');
-  if (!app || !appState.analysisResult || !appState.cleaningResult || !appState.lastParams) return;
+  if (!app || !appState.analysisResult || !appState.cleaningResult || !appState.lastParams || !lastRunInputs) return;
+  const inputs = lastRunInputs;
 
   const result = appState.analysisResult;
   const cleaning = appState.cleaningResult;
@@ -834,12 +855,19 @@ function renderResults(): void {
   const assumptions = generateAssumptions(params);
 
   const aliasPairs = params.aliasList.filter((a) => a.from.trim() && a.to.trim());
+  const where = (r: { file?: string; line: number }): string => `${r.file ? `${escapeHtml(r.file)} ` : ''}line ${r.line}`;
   const repairsList = cleaning.repairs.length > 0
-    ? `<ul class="quality-list">${cleaning.repairs.map((r) => `<li>line ${r.line}, ${escapeHtml(r.vanId)}, ${escapeHtml(r.date)}: odometer "${escapeHtml(r.odometerRaw)}" → GPS ${r.gpsKm} km</li>`).join('')}</ul>`
+    ? `<ul class="quality-list">${cleaning.repairs.map((r) => `<li>${where(r)}, ${escapeHtml(r.vanId)}, ${escapeHtml(r.date)}: odometer "${escapeHtml(r.odometerRaw)}" → GPS ${r.gpsKm} km</li>`).join('')}</ul>`
     : '';
   const droppedList = cleaning.dropped.length > 0
-    ? `<ul class="quality-list">${cleaning.dropped.map((d) => `<li>line ${d.line}, ${escapeHtml(d.vanId || '—')}, ${escapeHtml(d.date || '—')}: ${escapeHtml(d.reason)}</li>`).join('')}</ul>`
+    ? `<ul class="quality-list">${cleaning.dropped.map((d) => `<li>${where(d)}, ${escapeHtml(d.vanId || '—')}, ${escapeHtml(d.date || '—')}: ${escapeHtml(d.reason)}</li>`).join('')}</ul>`
     : '';
+  const tripFilesText = inputs.tripFiles.map((f) => `${escapeHtml(f.name)} (${f.rows.length} rows)`).join(', ');
+  const renames = [inputs.vans, ...inputs.tripFiles]
+    .filter((f) => f.renamed.length > 0)
+    .map((f) => `${escapeHtml(f.name)}: ${f.renamed.map((r) => `${escapeHtml(r.from)} → ${escapeHtml(r.to)}`).join(', ')}`);
+  const span = tripDateSpan(inputs.combinedTrips);
+  const spanText = span ? ` (${span.first} to ${span.last})` : '';
 
   // Build per-van table rows (all vans)
   const yesNo = (ok: boolean): string => (ok ? 'Yes' : 'No');
@@ -903,6 +931,9 @@ function renderResults(): void {
         <section class="results-section">
           <h2>Data Quality Report</h2>
           <div class="quality-report">
+            <div class="quality-item"><strong>Van register:</strong> ${escapeHtml(inputs.vans.name)} (${inputs.vans.rows.length} vans)</div>
+            <div class="quality-item"><strong>Trip files:</strong> ${tripFilesText}</div>
+            <div class="quality-item"><strong>Columns renamed:</strong> ${renames.length > 0 ? renames.join('; ') : 'none'}</div>
             <div class="quality-item"><strong>Rows read:</strong> ${cleaning.rowsRead}</div>
             <div class="quality-item"><strong>Exact duplicates removed:</strong> ${cleaning.exactDuplicatesRemoved}</div>
             <div class="quality-item"><strong>IDs remapped by alias:</strong> ${cleaning.aliasRemaps} (${aliasPairs.length > 0 ? aliasPairs.map((a) => `${escapeHtml(a.from)} → ${escapeHtml(a.to)}`).join(', ') : 'no aliases'})</div>
@@ -910,7 +941,7 @@ function renderResults(): void {
             <div class="quality-item"><strong>Blank gps_km (rows kept):</strong> ${cleaning.blankGps}</div>
             <div class="quality-item"><strong>Rows dropped:</strong> ${cleaning.invalidRowsRemoved}${droppedList}</div>
             <div class="quality-item"><strong>Unknown van IDs found:</strong> ${cleaning.unknownVanIds.length > 0 ? cleaning.unknownVanIds.map(escapeHtml).join(', ') : 'none'}</div>
-            <div class="quality-item"><strong>Export length:</strong> ${params.exportWeeks} weeks</div>
+            <div class="quality-item"><strong>Export length:</strong> ${params.exportWeeks} weeks${spanText}</div>
           </div>
         </section>
 
@@ -1013,6 +1044,8 @@ function renderResults(): void {
             <button class="btn-secondary" id="downloadAssumptions">Download assumptions.md</button>
             <button class="btn-secondary" id="downloadSettings">Download settings.json</button>
             <button class="btn-secondary" id="downloadPerVan">Download per-van.csv</button>
+            <button class="btn-secondary" id="downloadNormalizedVans">Download normalized vans.csv</button>
+            <button class="btn-secondary" id="downloadNormalizedTrips">Download normalized trips.csv</button>
           </div>
         </section>
 
@@ -1067,6 +1100,14 @@ function renderResults(): void {
       ].map(formatCsvValue).join(','));
     }
     downloadFile(lines.join('\n'), 'per-van.csv', 'text/csv;charset=utf-8');
+  });
+
+  document.getElementById('downloadNormalizedVans')?.addEventListener('click', () => {
+    downloadFile(normalizedVansCsv(inputs.vans.rows), 'vans.csv', 'text/csv;charset=utf-8');
+  });
+
+  document.getElementById('downloadNormalizedTrips')?.addEventListener('click', () => {
+    downloadFile(normalizedTripsCsv(inputs.combinedTrips, inputs.vanIds, inputs.aliasMap), 'trips.csv', 'text/csv;charset=utf-8');
   });
 
   document.getElementById('backBtn')?.addEventListener('click', () => {

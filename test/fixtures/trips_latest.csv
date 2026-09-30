@@ -1,0 +1,13 @@
+date,van_id,driver,origin,destination,odo_km,gps_km,max_load_kg,refrigerated
+2026-09-14,P-01,Jan,Warsaw,Lodz,132.4,131.0,820,no
+2026-09-14,P-05,Ola,Warsaw,Radom,104.0,103.2,760,no
+2026-09-14,P-17B,Dominik,Wroclaw,Opole,96.5,95.8,730,no
+2026-09-14,P-39,Kamil,Warsaw,Plock,118.0,117.1,690,no
+2026-09-15,P-40,Iga,Wroclaw,Legnica,87.2,86.5,710,no
+2026-09-15,P-40,Iga,Wroclaw,Legnica,87.2,86.5,710,no
+2026-09-16,P-01,Jan,Warsaw,Siedlce,98.1,97.4,840,no
+2026-09-17,P-39,Kamil,Warsaw,Ciechanow,121.6,,700,no
+2026-09-21,P-17B,Dominik,Wroclaw,Walbrzych,79.3,78.9,745,no
+2026-09-22,P-05,Ola,Warsaw,Kielce,176.4,175.0,770,no
+2026-09-24,P-40,Iga,Wroclaw,Swidnica,64.8,64.1,705,no
+2026-09-27,P-39,Kamil,Warsaw,Pultusk,71.0,70.4,680,no
