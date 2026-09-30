@@ -17,7 +17,14 @@ The application is a single-page, browser-only web app for analyzing which deliv
 - **File Uploads**: Validate `vans.csv` and `trips.csv` headers and types; show clear errors for missing columns, unparseable numbers, and unknown van IDs in trips. Run button disabled until both files valid.
 - **Settings**: Save all parameters as JSON; load JSON to restore parameters for next quarter's analysis.
 
-**Screen 2 — Results** (not yet implemented) will display data quality report, check figures, per-van metrics, shortlist, assumptions, and downloads.
+**Screen 2 — Results** displays the analysis output:
+- **Data Quality Report**: Shows rows read, exact duplicates removed, IDs remapped by alias, distances repaired (odometer → GPS fallbacks), invalid rows removed, and unknown van IDs encountered.
+- **Check Figures**: Vans assessed, trips counted (after deduplication and cleaning), total kilometers traveled.
+- **Per-Van Analysis Table**: All 38 vans with metrics (depot, refrigerated flag, owned/leased, lease end date, P95 daily km, max single day, max load carried, annualized km), EV model eligibility (Yes/No for each model), best EV model, and status (shortlisted with rank / excluded with reason).
+- **Shortlist Table**: Ranked recommendations (1 to N) showing van ID, EV model, EV depot (North or South after any re-basing), P95 daily km, annual km, annual fuel saving in PLN, 5-year total saving in PLN, and one-line reason (e.g., "Owned North van, P95 145 km fits 60% of Volta Cargo S range, saves 21,710 PLN").
+- **Assumptions List**: Human-readable summary of all parameters and business rules applied to the analysis (diesel price, EV models, maintenance costs, electricity tariffs, grant cap, charging infrastructure, range rule, financing horizon, lease exit fees, exclusions, analysis date, annualization method, odometer preference).
+- **Downloads**: Buttons to download `shortlist.csv` (CSV with correct formatting: UTF-8, comma delimiter, dot decimals, no thousands separators), `summary.csv` (figure/value pairs), `assumptions.md`, `settings.json` (parameters for next quarter), and optional `per-van.csv` (all vans with metrics).
+- **Back to Parameters**: Button to return to Screen 1, preserving parameters and allowing re-runs with different data or settings.
 
 The calculation engine implements all business rules: trip data cleaning (deduplication, alias remapping, odometer repair with GPS fallback), van metrics (P95 percentile daily km from summed multi-route days, max load, annualized km), eligibility checks (refrigeration exclusion, range fit, payload fit, depot constraints), financial analysis (5-year operating saving minus EV net cost minus diesel lease exit fee), and shortlist optimization enforcing caps (10 grant, 10 charging points, 3 South rebasing).
 
