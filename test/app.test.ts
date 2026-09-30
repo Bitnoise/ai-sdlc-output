@@ -36,3 +36,15 @@ describe("GET /version", () => {
     expect(res.body).toEqual({ commit: null });
   });
 });
+
+describe("Server actions", () => {
+  it("invokes server endpoints to trigger actions", async () => {
+    const healthRes = await request(app).get("/health");
+    expect(healthRes.status).toBe(200);
+    expect(healthRes.text).toBe("ok");
+
+    const versionRes = await request(app).get("/version");
+    expect(versionRes.status).toBe(200);
+    expect(versionRes.body).toEqual({ commit: null });
+  });
+});
