@@ -50,6 +50,24 @@ describe("GET /", () => {
     expect(res.text).toContain("upload the lunch shortlist.csv to see which vans entered or left");
   });
 
+  it("states in the server HTML that the header is green", async () => {
+    const res = await request(app).get("/");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("the app title is shown on a green background");
+    expect(res.text).toContain("<h1>Which Vans Go Electric?</h1>");
+  });
+
+  it("styles the page header with a green background instead of the purple gradient", () => {
+    const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+    const headerRule = html.match(/\.header \{[^}]*\}/)?.[0] ?? "";
+
+    expect(headerRule).toContain("background: #2e7d32");
+    expect(headerRule).toContain("color: white");
+    expect(html).not.toContain("#764ba2");
+    expect(html).not.toContain("linear-gradient(135deg, #667eea");
+  });
+
   describe("with a built client", () => {
     let dir: string;
 
