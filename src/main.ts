@@ -1,4 +1,4 @@
-import { analyzeFleet, type DieselModel, type EVModel, type CapConfig } from './engine';
+import { analyzeFleet, cleanTrips, type DieselModel, type EVModel, type CapConfig, type AnalysisResult, type CleaningResult, type Van, type VanMetrics, generateShortlistCsv, generateSummaryCsv } from './engine';
 import Papa from 'papaparse';
 
 interface AppState {
@@ -26,6 +26,8 @@ interface AppState {
   exportWeeks: number;
   vansFile: File | null;
   tripsFile: File | null;
+  analysisResult: AnalysisResult | null;
+  cleaningResult: CleaningResult | null;
 }
 
 interface UploadError {
@@ -69,6 +71,8 @@ const DEFAULT_STATE: AppState = {
   exportWeeks: 13,
   vansFile: null,
   tripsFile: null,
+  analysisResult: null,
+  cleaningResult: null,
 };
 
 const appState: AppState = JSON.parse(JSON.stringify(DEFAULT_STATE));
@@ -720,14 +724,420 @@ function attachEventListeners(): void {
   });
 
   // Form submit
-  document.getElementById('parametersForm')?.addEventListener('submit', (e) => {
+  document.getElementById('parametersForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (areFilesValid()) {
-      console.log('Form submitted with valid files');
-      console.log('Vans:', parsedVans);
-      console.log('Trips:', parsedTrips);
+      await runAnalysis();
     }
   });
+}
+
+async function runAnalysis(): Promise<void> {
+  // Parse vans from CSV
+  const vans: Van[] = parsedVans.map((row) => ({
+    vanId: String(row.van_id).trim(),
+    dieselModel: String(row.diesel_model).trim(),
+    depot: (row.depot === 'North' ? 'North' : 'South') as 'North' | 'South',
+    ownedOrLeased: (row.owned_or_leased === 'owned' ? 'owned' : 'leased') as 'owned' | 'leased',
+    leaseEndDate: row.lease_end ? String(row.lease_end) : undefined,
+    monthlyLeasePln: row.monthly_lease_pln ? parseFloat(String(row.monthly_lease_pln)) : undefined,
+    refrigerated: row.refrigerated === 'yes' || row.refrigerated === 'true' || row.refrigerated === '1',
+  }));
+
+  // Create alias map and van ID set
+  const aliasMap = new Map(appState.aliasList.map(a => [a.from, a.to]));
+  const vanIds = new Set(vans.map(v => v.vanId));
+
+  // Clean trips
+  const cleaningResult = cleanTrips(parsedTrips as Array<Record<string, unknown>>, vanIds, aliasMap);
+  appState.cleaningResult = cleaningResult;
+
+  // Create diesel models map
+  const dieselModelsMap = new Map<string, DieselModel>();
+  for (const model of appState.dieselModels) {
+    dieselModelsMap.set(model.name, model);
+  }
+
+  // Create cap config
+  const capConfig: CapConfig = {
+    grantCap: appState.grantMaxCount,
+    chargingPointsNorth: appState.chargingPointsNorth,
+    southRebaseCap: appState.maxSouthRebase,
+  };
+
+  // Run analysis
+  const result = analyzeFleet(
+    vans,
+    cleaningResult.trips,
+    appState.exportWeeks,
+    dieselModelsMap,
+    appState.dieselPricePln,
+    appState.dieselMaintenancePln,
+    appState.evModels,
+    appState.evMaintenancePln,
+    appState.nightTariffPln,
+    appState.grantPercentage,
+    appState.evaluationYears,
+    appState.analysisDate,
+    capConfig,
+    appState.usableWltpShare
+  );
+
+  // Store full cleaning result metadata
+  result.cleaningResult = cleaningResult;
+  appState.analysisResult = result;
+
+  renderResults();
+}
+
+function generateAssumptionsMd(): string {
+  const lines: string[] = [];
+  lines.push('# Analysis Assumptions');
+  lines.push('');
+  lines.push(`- Analysis date: ${appState.analysisDate}`);
+  lines.push(`- Evaluation horizon: ${appState.evaluationYears} years`);
+  lines.push(`- Diesel price: ${appState.dieselPricePln} PLN/L`);
+  lines.push(`- Diesel maintenance: ${appState.dieselMaintenancePln} PLN/km`);
+  lines.push(`- EV maintenance: ${appState.evMaintenancePln} PLN/km`);
+  lines.push(`- Electricity night tariff: ${appState.nightTariffPln} PLN/kWh`);
+  lines.push(`- Electricity day tariff: ${appState.dayTariffPln} PLN/kWh`);
+  lines.push(`- Grant: ${appState.grantPercentage}% of purchase price, max ${appState.grantMaxCount} vans (purchase only, not leased)`);
+  lines.push(`- Charging: North depot ${appState.chargingPointsNorth} points, South depot ${appState.chargingPointsSouth} points, overnight charging only`);
+  lines.push(`- Max South vans re-based to North: ${appState.maxSouthRebase}`);
+  lines.push(`- Range rule: ${appState.rangePercentile}th percentile of daily km, usable share ${appState.usableWltpShare}% of WLTP range`);
+  lines.push(`- Midday top-up: ${appState.midDayTopup ? 'allowed' : 'not allowed'}`);
+  lines.push(`- Lease exit fee: ${appState.leaseExitFeeMonths}× monthly lease payment for vans with lease ending >12 months from analysis date`);
+  lines.push(`- Lease ends soon window: ${appState.leaseWindowMonths} months from analysis date`);
+  lines.push(`- Exclude refrigerated vans: ${appState.excludeRefrigerated ? 'yes' : 'no'}`);
+  lines.push(`- Export weeks: ${appState.exportWeeks}`);
+  lines.push('- Odometer preferred over GPS; GPS only as fallback');
+  lines.push('- Double-route days summed (no midday recharge between routes)');
+  lines.push('- Annualization from summer export, no seasonal uplift beyond data');
+  return lines.join('\n');
+}
+
+function downloadFile(content: string, filename: string, mimeType: string = 'text/plain'): void {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function renderResults(): void {
+  const app = document.getElementById('app');
+  if (!app || !appState.analysisResult || !appState.cleaningResult) return;
+
+  const result = appState.analysisResult;
+  const cleaning = appState.cleaningResult;
+
+  // Build per-van table rows (all vans)
+  const vanRows = Array.from(result.vanMetrics.entries()).map(([vanId, metrics]) => {
+    const van = result.vans.find(v => v.vanId === vanId);
+    if (!van) return '';
+
+    const shortlistEntry = result.shortlist.find(s => s.vanId === vanId);
+    const statusBadge = shortlistEntry
+      ? `<span class="status-shortlisted">Shortlisted (rank ${shortlistEntry.rank})</span>`
+      : `<span class="status-excluded">Excluded</span>`;
+
+    const excludedReason = shortlistEntry ? '' : getExclusionReason(van, metrics);
+
+    const evEligibility: Record<string, string> = {};
+    for (const evModel of appState.evModels) {
+      const elig = checkVanEVEligibility(van, metrics, evModel);
+      evEligibility[evModel.name] = elig ? 'Yes' : 'No';
+    }
+
+    const bestModel = findBestEVModel(van, metrics, result.vans);
+
+    return `
+      <tr>
+        <td>${vanId}</td>
+        <td>${metrics.depot}</td>
+        <td>${metrics.refrigerated ? 'Yes' : 'No'}</td>
+        <td>${van.ownedOrLeased}</td>
+        <td>${van.leaseEndDate || '—'}</td>
+        <td>${metrics.p95DayKm.toFixed(1)}</td>
+        <td>${metrics.maxDayKm}</td>
+        <td>${metrics.maxLoadKg}</td>
+        <td>${metrics.annualKm}</td>
+        ${appState.evModels.map(m => `<td>${evEligibility[m.name]}</td>`).join('')}
+        <td>${bestModel || '—'}</td>
+        <td>${statusBadge}</td>
+        <td>${excludedReason}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Build shortlist table rows
+  const shortlistRows = result.shortlist.map(entry => `
+    <tr>
+      <td>${entry.rank}</td>
+      <td>${entry.vanId}</td>
+      <td>${entry.evModel}</td>
+      <td>${entry.evDepot}</td>
+      <td>${entry.rangeCheckKm.toFixed(1)}</td>
+      <td>${entry.annualKm}</td>
+      <td>${entry.annualFuelSavingPln}</td>
+      <td>${entry.savingPln}</td>
+      <td>${entry.reason}</td>
+    </tr>
+  `).join('');
+
+  const evModelHeaders = appState.evModels.map(m => `<th>${m.name}</th>`).join('');
+
+  app.innerHTML = `
+    <div class="container">
+      <div class="header">
+        <h1>Which Vans Go Electric?</h1>
+        <p class="subtitle">Analysis Results</p>
+      </div>
+
+      <div class="results-content">
+        <!-- Data Quality Report -->
+        <section class="results-section">
+          <h2>Data Quality Report</h2>
+          <div class="quality-report">
+            <div class="quality-item"><strong>Rows read:</strong> ${cleaning.rowsRead}</div>
+            <div class="quality-item"><strong>Exact duplicates removed:</strong> ${cleaning.exactDuplicatesRemoved}</div>
+            <div class="quality-item"><strong>IDs remapped by alias:</strong> ${cleaning.unknownVanIds.length > 0 ? 'applied' : 'none needed'}</div>
+            <div class="quality-item"><strong>Distances repaired:</strong> ${cleaning.odometerRepairs} (GPS used instead of odometer)</div>
+            <div class="quality-item"><strong>Invalid rows removed:</strong> ${cleaning.invalidRowsRemoved}</div>
+            <div class="quality-item"><strong>Unknown van IDs found:</strong> ${cleaning.unknownVanIds.length > 0 ? cleaning.unknownVanIds.join(', ') : 'none'}</div>
+          </div>
+        </section>
+
+        <!-- Check Figures -->
+        <section class="results-section">
+          <h2>Check Figures</h2>
+          <div class="check-figures">
+            <div class="check-item">
+              <span class="check-label">Vans assessed:</span>
+              <span class="check-value">${result.checkFigures.vansAssessed}</span>
+            </div>
+            <div class="check-item">
+              <span class="check-label">Trips counted:</span>
+              <span class="check-value">${result.checkFigures.tripsCounted}</span>
+            </div>
+            <div class="check-item">
+              <span class="check-label">Total km:</span>
+              <span class="check-value">${result.checkFigures.totalKm.toLocaleString('en-US')}</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Per-Van Metrics Table -->
+        <section class="results-section">
+          <h2>Per-Van Analysis</h2>
+          <div class="table-container">
+            <table class="results-table">
+              <thead>
+                <tr>
+                  <th>Van ID</th>
+                  <th>Depot</th>
+                  <th>Fridge</th>
+                  <th>Own/Lease</th>
+                  <th>Lease End</th>
+                  <th>P95 Day km</th>
+                  <th>Max Day km</th>
+                  <th>Max Load</th>
+                  <th>Annual km</th>
+                  ${evModelHeaders}
+                  <th>Best EV</th>
+                  <th>Status</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${vanRows}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Shortlist Table -->
+        <section class="results-section">
+          <h2>Shortlist (${result.shortlist.length} vans recommended)</h2>
+          <div class="table-container">
+            <table class="results-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Van ID</th>
+                  <th>EV Model</th>
+                  <th>EV Depot</th>
+                  <th>P95 Day km</th>
+                  <th>Annual km</th>
+                  <th>Annual Fuel Saving</th>
+                  <th>5-Year Saving</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${shortlistRows}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Assumptions -->
+        <section class="results-section">
+          <h2>Analysis Assumptions</h2>
+          <div class="assumptions-box">
+            ${generateAssumptionsMd().split('\n').slice(2).map(line => line.trim() ? `<div class="assumption-item">${line}</div>` : '').join('')}
+          </div>
+        </section>
+
+        <!-- Downloads -->
+        <section class="results-section">
+          <h2>Downloads</h2>
+          <div class="button-group">
+            <button class="btn-secondary" id="downloadShortlist">Download shortlist.csv</button>
+            <button class="btn-secondary" id="downloadSummary">Download summary.csv</button>
+            <button class="btn-secondary" id="downloadAssumptions">Download assumptions.md</button>
+            <button class="btn-secondary" id="downloadSettings">Download settings.json</button>
+            <button class="btn-secondary" id="downloadPerVan">Download per-van.csv</button>
+          </div>
+        </section>
+
+        <!-- Back Button -->
+        <section class="results-section">
+          <button class="btn-primary" id="backBtn">Back to Parameters</button>
+        </section>
+      </div>
+    </div>
+  `;
+
+  // Attach download listeners
+  document.getElementById('downloadShortlist')?.addEventListener('click', () => {
+    const csv = generateShortlistCsv(result.shortlist);
+    downloadFile(csv, 'shortlist.csv', 'text/csv;charset=utf-8');
+  });
+
+  document.getElementById('downloadSummary')?.addEventListener('click', () => {
+    const csv = generateSummaryCsv(
+      result.checkFigures.vansAssessed,
+      result.checkFigures.tripsCounted,
+      result.checkFigures.totalKm,
+      result.summary.recommendedCount,
+      result.summary.annualFuelSavingPln,
+      result.summary.savingPln
+    );
+    downloadFile(csv, 'summary.csv', 'text/csv;charset=utf-8');
+  });
+
+  document.getElementById('downloadAssumptions')?.addEventListener('click', () => {
+    const md = generateAssumptionsMd();
+    downloadFile(md, 'assumptions.md', 'text/markdown;charset=utf-8');
+  });
+
+  document.getElementById('downloadSettings')?.addEventListener('click', () => {
+    const settingsData = {
+      dieselModels: appState.dieselModels,
+      evModels: appState.evModels,
+      dieselPricePln: appState.dieselPricePln,
+      dieselMaintenancePln: appState.dieselMaintenancePln,
+      evMaintenancePln: appState.evMaintenancePln,
+      nightTariffPln: appState.nightTariffPln,
+      dayTariffPln: appState.dayTariffPln,
+      grantPercentage: appState.grantPercentage,
+      grantMaxCount: appState.grantMaxCount,
+      chargingPointsNorth: appState.chargingPointsNorth,
+      chargingPointsSouth: appState.chargingPointsSouth,
+      maxSouthRebase: appState.maxSouthRebase,
+      rangePercentile: appState.rangePercentile,
+      usableWltpShare: appState.usableWltpShare,
+      midDayTopup: appState.midDayTopup,
+      evaluationYears: appState.evaluationYears,
+      leaseExitFeeMonths: appState.leaseExitFeeMonths,
+      leaseWindowMonths: appState.leaseWindowMonths,
+      analysisDate: appState.analysisDate,
+      excludeRefrigerated: appState.excludeRefrigerated,
+      aliasList: appState.aliasList,
+      exportWeeks: appState.exportWeeks,
+    };
+    downloadFile(JSON.stringify(settingsData, null, 2), 'settings.json', 'application/json;charset=utf-8');
+  });
+
+  document.getElementById('downloadPerVan')?.addEventListener('click', () => {
+    const lines = ['van_id,depot,refrigerated,owned_or_leased,lease_end,p95_day_km,max_day_km,max_load_kg,annual_km,best_ev_model,status,reason'];
+    for (const [vanId, metrics] of result.vanMetrics.entries()) {
+      const van = result.vans.find(v => v.vanId === vanId);
+      if (van) {
+        const shortlistEntry = result.shortlist.find(s => s.vanId === vanId);
+        const status = shortlistEntry ? 'shortlisted' : 'excluded';
+        const reason = shortlistEntry ? `Rank ${shortlistEntry.rank}` : getExclusionReason(van, metrics);
+        const bestModel = findBestEVModel(van, metrics, result.vans) || '';
+        lines.push(`${vanId},${metrics.depot},${metrics.refrigerated ? 'yes' : 'no'},${van.ownedOrLeased},${van.leaseEndDate || ''},${metrics.p95DayKm.toFixed(1)},${metrics.maxDayKm},${metrics.maxLoadKg},${metrics.annualKm},${bestModel},${status},"${reason}"`);
+      }
+    }
+    downloadFile(lines.join('\n'), 'per-van.csv', 'text/csv;charset=utf-8');
+  });
+
+  document.getElementById('backBtn')?.addEventListener('click', () => {
+    renderForm();
+  });
+}
+
+function checkVanEVEligibility(van: Van, metrics: VanMetrics, evModel: EVModel): boolean {
+  if (appState.excludeRefrigerated && metrics.refrigerated) return false;
+
+  const usableRange = (appState.usableWltpShare / 100) * evModel.wltpRangeKm;
+  if (metrics.p95DayKm > usableRange) return false;
+
+  if (metrics.maxLoadKg > evModel.payloadKg) return false;
+
+  return true;
+}
+
+function findBestEVModel(van: Van, metrics: VanMetrics, _vans: Van[]): string | null {
+  let bestModel: string | null = null;
+  let bestSaving = 0;
+
+  for (const evModel of appState.evModels) {
+    if (!checkVanEVEligibility(van, metrics, evModel)) continue;
+
+    // Simple financial estimate for display
+    const dieselModel = appState.dieselModels.find(m => m.name === van.dieselModel);
+    if (!dieselModel) continue;
+
+    const dieselFuelCostPerKm = (dieselModel.fuelUseLper100km / 100) * appState.dieselPricePln;
+    const evChargingCostPerKm = (evModel.energyKwhPer100km / 100) * appState.nightTariffPln;
+    const annualOperatingSaving = metrics.annualKm * ((dieselFuelCostPerKm + appState.dieselMaintenancePln) - (evChargingCostPerKm + appState.evMaintenancePln));
+    const evNetCost = evModel.purchasePricePln * (1 - appState.grantPercentage / 100);
+    const saving = appState.evaluationYears * annualOperatingSaving - evNetCost;
+
+    if (saving > bestSaving) {
+      bestSaving = saving;
+      bestModel = evModel.name;
+    }
+  }
+
+  return bestModel;
+}
+
+function getExclusionReason(van: Van, metrics: VanMetrics): string {
+  if (appState.excludeRefrigerated && metrics.refrigerated) {
+    return 'Refrigerated van';
+  }
+
+  for (const evModel of appState.evModels) {
+    const usableRange = (appState.usableWltpShare / 100) * evModel.wltpRangeKm;
+    const rangeFit = metrics.p95DayKm <= usableRange;
+    const payloadFit = metrics.maxLoadKg <= evModel.payloadKg;
+
+    if (!rangeFit) {
+      return `Range: P95 ${metrics.p95DayKm.toFixed(1)} km exceeds 60% of ${evModel.name} (${usableRange.toFixed(0)} km)`;
+    }
+    if (!payloadFit) {
+      return `Payload: max load ${metrics.maxLoadKg} kg exceeds ${evModel.name} (${evModel.payloadKg} kg)`;
+    }
+  }
+
+  return 'No profitable model';
 }
 
 function initApp(): void {
