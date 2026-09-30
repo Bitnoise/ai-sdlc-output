@@ -456,6 +456,12 @@ describe("generateAssumptions", () => {
     expect(text(params({ rangeRule: "percentile" }))).not.toContain("lunch preview is dropped");
   });
 
+  it("states how impact causes against the lunch shortlist are decided", () => {
+    const all = text(params());
+    expect(all).toContain("Impact vs the lunch shortlist: old data = trips up to the lunch cutoff, old rule = P95 day");
+    expect(all).toContain('"other" when the lunch baseline already matches today');
+  });
+
   it("follows changed parameters", () => {
     const all = text(params({ usableWltpShare: 0.7, middayTopup: true, evaluationYears: 7, excludeRefrigerated: false }));
     expect(all).toContain("70%");

@@ -704,6 +704,7 @@ export function generateAssumptions(params: AnalysisParams): string[] {
     "Double-route days summed, no midday top-up by default.",
     "Odometer preferred over GPS; GPS only as fallback.",
     "Annualisation from a summer export (15 Jun–13 Sep); no seasonal uplift; no Christmas load uplift beyond what the export shows. Route changes are not assumed (vans keep their routes).",
+    `Impact vs the lunch shortlist: old data = trips up to the lunch cutoff, old rule = P${params.rangePercentile} day; a change is "new data" or "new rule" when that change alone reproduces it, "both" when it needs both or either alone does, "other" when the lunch baseline already matches today (caps, rank or settings).`,
     "Open questions for Ewa next time: grant rules for South/fridge vans, real winter range, midday charging at North, fridge-unit energy use.",
   ];
 }

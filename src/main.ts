@@ -1,5 +1,6 @@
 import { analyzeFleet, cleanTrips, deriveExportWeeks, formatCsvValue, generateAssumptions, generateAssumptionsMd, rangeCheckKm, usableKm, type AnalysisParams, type RangeRule, type DieselModel, type EVModel, type AnalysisResult, type CleaningResult, type Van, generateShortlistCsv, generateSummaryCsv } from './engine';
-import { combineTripFiles, findUnknownVanIds, missingColumns, normalizedTripsCsv, normalizedVansCsv, normalizeHeaders, REQUIRED_TRIP_COLUMNS, REQUIRED_VAN_COLUMNS, TRIP_HEADER_ALIASES, tripDateSpan, VAN_HEADER_ALIASES, type HeaderRename } from './ingest';
+import { combineTripFiles, findUnknownVanIds, missingColumns, normalizedTripsCsv, normalizedVansCsv, normalizeHeaders, REQUIRED_TRIP_COLUMNS, REQUIRED_VAN_COLUMNS, TRIP_HEADER_ALIASES, tripDateSpan, VAN_HEADER_ALIASES, type HeaderRename, type TripSource } from './ingest';
+import { classifyImpact, defaultLunchCutoff, generateImpactCsv, parsePreviousShortlist, runImpactScenarios, type ImpactRow } from './impact';
 import Papa from 'papaparse';
 
 interface AppState {
@@ -54,6 +55,8 @@ interface RunInputs {
   vans: UploadedCsv;
   tripFiles: UploadedCsv[];
   combinedTrips: ParsedRow[];
+  sources: TripSource[];
+  vanList: Van[];
   vanIds: Set<string>;
   aliasMap: Map<string, string>;
 }
@@ -103,6 +106,11 @@ let tripFiles: UploadedCsv[] = [];
 let lastRunInputs: RunInputs | null = null;
 let exportWeeksAutoDerived = false;
 let settingsError = '';
+// The lunch shortlist to compare against; kept across reruns and Back.
+let previousShortlist: { name: string; vanIds: string[] } | null = null;
+let impactCutoff = '';
+let impactCutoffEdited = false;
+let impactError = '';
 
 function escapeHtml(value: unknown): string {
   return String(value ?? '')
@@ -251,6 +259,11 @@ function deriveWeeksFromTripFiles(): void {
     appState.exportWeeks = weeks;
     exportWeeksAutoDerived = true;
   }
+}
+
+/** The lunch cutoff follows the trip files until the user edits it. */
+function updateImpactCutoff(): void {
+  if (!impactCutoffEdited) impactCutoff = defaultLunchCutoff(tripFiles);
 }
 
 function areFilesValid(): boolean {
@@ -741,6 +754,7 @@ function attachEventListeners(): void {
         else tripFiles.push(parsed);
       }
       deriveWeeksFromTripFiles();
+      updateImpactCutoff();
       validateUploads();
       renderForm();
     }
@@ -750,6 +764,7 @@ function attachEventListeners(): void {
     e.preventDefault();
     tripFiles = [];
     exportWeeksAutoDerived = false;
+    updateImpactCutoff();
     validateUploads();
     renderForm();
   });
@@ -841,7 +856,7 @@ async function runAnalysis(): Promise<void> {
   const combined = combineTripFiles(tripFiles);
   const cleaningResult = cleanTrips(combined.rows, vanIds, aliasMap, combined.sources);
   appState.cleaningResult = cleaningResult;
-  lastRunInputs = { vans: vansUpload, tripFiles: [...tripFiles], combinedTrips: combined.rows, vanIds, aliasMap };
+  lastRunInputs = { vans: vansUpload, tripFiles: [...tripFiles], combinedTrips: combined.rows, sources: combined.sources, vanList: vans, vanIds, aliasMap };
 
   // Downloads reflect the parameters of this run, not later form edits.
   const params = buildParams();
@@ -860,6 +875,21 @@ function downloadFile(content: string, filename: string, mimeType: string = 'tex
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** Vans that entered or left against the previous shortlist, or null before one is uploaded. */
+function computeImpact(inputs: RunInputs, result: AnalysisResult, params: AnalysisParams): ImpactRow[] | null {
+  if (!previousShortlist) return null;
+  const scenarios = runImpactScenarios({
+    vans: inputs.vanList,
+    combinedRows: inputs.combinedTrips,
+    sources: inputs.sources,
+    vanIds: inputs.vanIds,
+    aliasMap: inputs.aliasMap,
+    params,
+    cutoff: impactCutoff,
+  });
+  return classifyImpact(previousShortlist.vanIds, result, scenarios);
 }
 
 function renderResults(): void {
@@ -935,6 +965,33 @@ function renderResults(): void {
   const evModelHeaders = params.evModels
     .map(m => `<th>${escapeHtml(m.name)} range OK</th><th>${escapeHtml(m.name)} payload OK</th><th>${escapeHtml(m.name)} ${params.evaluationYears}-yr saving (PLN)</th>`)
     .join('');
+  const impact = computeImpact(inputs, result, params);
+  const impactRows = impact?.map((r) => `
+    <tr>
+      <td>${escapeHtml(r.vanId)}</td>
+      <td>${r.change}</td>
+      <td>${r.cause}</td>
+      <td>${escapeHtml(r.note)}</td>
+    </tr>
+  `).join('');
+  const impactHtml = impact && previousShortlist
+    ? `
+          <div class="quality-item"><strong>Previous shortlist:</strong> ${escapeHtml(previousShortlist.name)} (${previousShortlist.vanIds.length} vans)</div>
+          <div class="table-container">
+            <table class="results-table">
+              <thead>
+                <tr><th>Van ID</th><th>Change</th><th>Cause</th><th>Note</th></tr>
+              </thead>
+              <tbody>
+                ${impactRows || '<tr><td colspan="4">No vans entered or left</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+          <div class="button-group">
+            <button class="btn-secondary" id="downloadImpact">Download impact.csv</button>
+          </div>`
+    : '';
+
   const rangeBasisNote = result.rangeBasis === 'route'
     ? '<p class="range-basis-note">Midday top-up on: range checked per route, not per day</p>'
     : '';
@@ -1048,6 +1105,23 @@ function renderResults(): void {
           </div>
         </section>
 
+        <!-- Impact vs previous shortlist -->
+        <section class="results-section">
+          <h2>Impact vs previous shortlist</h2>
+          <div class="form-row">
+            <div class="form-col">
+              <label>Upload previous shortlist.csv:</label>
+              <input type="file" id="previousShortlistUpload" accept=".csv" />
+            </div>
+            <div class="form-col">
+              <label>Lunch data ends on:</label>
+              <input type="date" id="impactCutoff" value="${escapeHtml(impactCutoff)}" />
+            </div>
+          </div>
+          ${impactError ? `<div class="errors"><div class="error-message">${escapeHtml(impactError)}</div></div>` : ''}
+          ${impactHtml}
+        </section>
+
         <!-- Assumptions -->
         <section class="results-section">
           <h2>Analysis Assumptions</h2>
@@ -1129,6 +1203,36 @@ function renderResults(): void {
 
   document.getElementById('downloadNormalizedTrips')?.addEventListener('click', () => {
     downloadFile(normalizedTripsCsv(inputs.combinedTrips, inputs.vanIds, inputs.aliasMap), 'trips.csv', 'text/csv;charset=utf-8');
+  });
+
+  document.getElementById('previousShortlistUpload')?.addEventListener('change', (e) => {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results: { data: ParsedRow[] }) => {
+        const parsed = parsePreviousShortlist(results.data);
+        impactError = parsed.error ? `${file.name}: ${parsed.error}` : '';
+        previousShortlist = parsed.error ? null : { name: file.name, vanIds: parsed.vanIds };
+        renderResults();
+      },
+      error: (error: { message: string }) => {
+        impactError = `${file.name}: ${error.message}`;
+        previousShortlist = null;
+        renderResults();
+      },
+    });
+  });
+
+  document.getElementById('impactCutoff')?.addEventListener('change', (e) => {
+    impactCutoff = (e.target as HTMLInputElement).value;
+    impactCutoffEdited = true;
+    renderResults();
+  });
+
+  document.getElementById('downloadImpact')?.addEventListener('click', () => {
+    if (impact) downloadFile(generateImpactCsv(impact), 'impact.csv', 'text/csv;charset=utf-8');
   });
 
   document.getElementById('backBtn')?.addEventListener('click', () => {
