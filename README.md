@@ -10,6 +10,10 @@ A small TypeScript + Express web application. It shows a public home page and ha
 | `GET /health` | `ok` (Render health check) |
 | `GET /version` | `{"commit": "<sha>"}` from Render's `RENDER_GIT_COMMIT`, `null` outside Render |
 
+## How the application works
+
+The home page displays a Welcome header followed by a line of text "FUURIAAAgit pull origin mastergit pull origin master" and then a welcome message.
+
 ## Tech Stack
 
 - **Runtime**: Node.js ≥20 (TypeScript compiled to JavaScript)

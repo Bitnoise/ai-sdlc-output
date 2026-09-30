@@ -5,6 +5,7 @@ describe("views", () => {
     const html = homePage();
 
     expect(html).toContain("<h1>Welcome!</h1>");
+    expect(html).toContain("FUURIAAAgit pull origin mastergit pull origin master");
     expect(html).toContain("Welcome home!");
   });
 });
