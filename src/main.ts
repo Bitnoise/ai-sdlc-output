@@ -1,4 +1,4 @@
-import { analyzeFleet, cleanTrips, type DieselModel, type EVModel, type CapConfig, type AnalysisResult, type CleaningResult, type Van, type VanMetrics, generateShortlistCsv, generateSummaryCsv } from './engine';
+import { analyzeFleet, cleanTrips, formatCsvValue, resolveVanId, usableKm, type AnalysisParams, type DieselModel, type EVModel, type AnalysisResult, type CleaningResult, type Van, generateShortlistCsv, generateSummaryCsv } from './engine';
 import Papa from 'papaparse';
 
 interface AppState {
@@ -140,27 +140,21 @@ function parseTripsCsv(file: File): Promise<void> {
           uploadErrors.push({ file: file.name, error: errors.join('; ') });
         } else {
           // Validate numeric columns and van IDs
-          const vanIds = new Set(parsedVans.map((v) => v.van_id?.toString().trim()));
+          const vanIds = new Set(parsedVans.map((v) => v.van_id?.toString().trim() ?? ''));
           const aliasMap = new Map(appState.aliasList.map(a => [a.from, a.to]));
           const unknownVanIds = new Set<string>();
 
           for (let i = 0; i < results.data.length; i++) {
             const row = results.data[i];
             const vanId = row.van_id?.toString().trim() ?? '';
-            const remappedId = aliasMap.get(vanId) || vanId;
+            const remappedId = resolveVanId(vanId, aliasMap, vanIds);
 
             if (!vanIds.has(remappedId)) {
               unknownVanIds.add(vanId ?? '');
             }
 
-            const odometerKm = parseFloat(String(row.odometer_km));
-            const gpsKm = parseFloat(String(row.gps_km));
-
-            if (!isNaN(odometerKm) && odometerKm !== 0 && isFinite(odometerKm)) {
-              // Valid odometer
-            } else if (!isNaN(gpsKm) && gpsKm > 0 && isFinite(gpsKm)) {
-              // Valid GPS
-            } else {
+            // Same rule as the engine: odometer if > 0, else GPS as fallback.
+            if (usableKm(row.odometer_km) === null && usableKm(row.gps_km) === null) {
               errors.push(`Row ${i + 2}: both odometer_km and gps_km are invalid or missing`);
             }
           }
@@ -752,40 +746,30 @@ async function runAnalysis(): Promise<void> {
   const cleaningResult = cleanTrips(parsedTrips as Array<Record<string, unknown>>, vanIds, aliasMap);
   appState.cleaningResult = cleaningResult;
 
-  // Create diesel models map
-  const dieselModelsMap = new Map<string, DieselModel>();
-  for (const model of appState.dieselModels) {
-    dieselModelsMap.set(model.name, model);
-  }
-
-  // Create cap config
-  const capConfig: CapConfig = {
+  const params: AnalysisParams = {
+    dieselModels: appState.dieselModels,
+    evModels: appState.evModels,
+    dieselPricePln: appState.dieselPricePln,
+    dieselMaintenancePln: appState.dieselMaintenancePln,
+    evMaintenancePln: appState.evMaintenancePln,
+    nightTariffPln: appState.nightTariffPln,
+    grantShare: appState.grantPercentage / 100,
     grantCap: appState.grantMaxCount,
     chargingPointsNorth: appState.chargingPointsNorth,
+    chargingPointsSouth: appState.chargingPointsSouth,
     southRebaseCap: appState.maxSouthRebase,
+    rangePercentile: appState.rangePercentile,
+    usableWltpShare: appState.usableWltpShare / 100,
+    middayTopup: appState.midDayTopup,
+    evaluationYears: appState.evaluationYears,
+    leaseExitFeeMonths: appState.leaseExitFeeMonths,
+    leaseWindowMonths: appState.leaseWindowMonths,
+    analysisDate: appState.analysisDate,
+    excludeRefrigerated: appState.excludeRefrigerated,
+    exportWeeks: appState.exportWeeks,
   };
 
-  // Run analysis
-  const result = analyzeFleet(
-    vans,
-    cleaningResult.trips,
-    appState.exportWeeks,
-    dieselModelsMap,
-    appState.dieselPricePln,
-    appState.dieselMaintenancePln,
-    appState.evModels,
-    appState.evMaintenancePln,
-    appState.nightTariffPln,
-    appState.grantPercentage / 100,
-    appState.evaluationYears,
-    appState.analysisDate,
-    capConfig,
-    appState.usableWltpShare / 100
-  );
-
-  // Store full cleaning result metadata
-  result.cleaningResult = cleaningResult;
-  appState.analysisResult = result;
+  appState.analysisResult = analyzeFleet(vans, cleaningResult, params);
 
   renderResults();
 }
@@ -834,40 +818,28 @@ function renderResults(): void {
   const cleaning = appState.cleaningResult;
 
   // Build per-van table rows (all vans)
-  const vanRows = Array.from(result.vanMetrics.entries()).map(([vanId, metrics]) => {
-    const van = result.vans.find(v => v.vanId === vanId);
-    if (!van) return '';
-
-    const shortlistEntry = result.shortlist.find(s => s.vanId === vanId);
-    const statusBadge = shortlistEntry
-      ? `<span class="status-shortlisted">Shortlisted (rank ${shortlistEntry.rank})</span>`
+  const yesNo = (ok: boolean): string => (ok ? 'Yes' : 'No');
+  const vanRows = result.evaluations.map((e) => {
+    const { van, metrics } = e;
+    const statusBadge = e.status === 'shortlisted'
+      ? `<span class="status-shortlisted">Shortlisted #${e.rank}</span>`
       : `<span class="status-excluded">Excluded</span>`;
-
-    const excludedReason = shortlistEntry ? '' : getExclusionReason(van, metrics);
-
-    const evEligibility: Record<string, string> = {};
-    for (const evModel of appState.evModels) {
-      const elig = checkVanEVEligibility(van, metrics, evModel);
-      evEligibility[evModel.name] = elig ? 'Yes' : 'No';
-    }
-
-    const bestModel = findBestEVModel(van, metrics, result.vans);
 
     return `
       <tr>
-        <td>${vanId}</td>
-        <td>${metrics.depot}</td>
-        <td>${metrics.refrigerated ? 'Yes' : 'No'}</td>
+        <td>${van.vanId}</td>
+        <td>${van.depot}</td>
+        <td>${van.refrigerated ? 'Yes' : 'No'}</td>
         <td>${van.ownedOrLeased}</td>
         <td>${van.leaseEndDate || '—'}</td>
         <td>${metrics.p95DayKm.toFixed(1)}</td>
-        <td>${metrics.maxDayKm}</td>
+        <td>${metrics.maxDayKm.toFixed(1)}</td>
         <td>${metrics.maxLoadKg}</td>
         <td>${metrics.annualKm}</td>
-        ${appState.evModels.map(m => `<td>${evEligibility[m.name]}</td>`).join('')}
-        <td>${bestModel || '—'}</td>
+        ${e.models.map(m => `<td>${yesNo(m.rangeOk)}</td><td>${yesNo(m.payloadOk)}</td><td>${m.savingPln ?? '—'}</td>`).join('')}
+        <td>${e.bestModel?.evModel ?? '—'}</td>
         <td>${statusBadge}</td>
-        <td>${excludedReason}</td>
+        <td>${e.exclusionReason ?? ''}</td>
       </tr>
     `;
   }).join('');
@@ -887,7 +859,12 @@ function renderResults(): void {
     </tr>
   `).join('');
 
-  const evModelHeaders = appState.evModels.map(m => `<th>${m.name}</th>`).join('');
+  const evModelHeaders = appState.evModels
+    .map(m => `<th>${m.name} range OK</th><th>${m.name} payload OK</th><th>${m.name} 5-yr saving (PLN)</th>`)
+    .join('');
+  const rangeBasisNote = result.rangeBasis === 'route'
+    ? '<p class="range-basis-note">Midday top-up on: range checked per route, not per day</p>'
+    : '';
 
   app.innerHTML = `
     <div class="container">
@@ -903,7 +880,7 @@ function renderResults(): void {
           <div class="quality-report">
             <div class="quality-item"><strong>Rows read:</strong> ${cleaning.rowsRead}</div>
             <div class="quality-item"><strong>Exact duplicates removed:</strong> ${cleaning.exactDuplicatesRemoved}</div>
-            <div class="quality-item"><strong>IDs remapped by alias:</strong> ${cleaning.unknownVanIds.length > 0 ? 'applied' : 'none needed'}</div>
+            <div class="quality-item"><strong>IDs remapped by alias:</strong> ${cleaning.aliasRemaps}</div>
             <div class="quality-item"><strong>Distances repaired:</strong> ${cleaning.odometerRepairs} (GPS used instead of odometer)</div>
             <div class="quality-item"><strong>Invalid rows removed:</strong> ${cleaning.invalidRowsRemoved}</div>
             <div class="quality-item"><strong>Unknown van IDs found:</strong> ${cleaning.unknownVanIds.length > 0 ? cleaning.unknownVanIds.join(', ') : 'none'}</div>
@@ -932,6 +909,7 @@ function renderResults(): void {
         <!-- Per-Van Metrics Table -->
         <section class="results-section">
           <h2>Per-Van Analysis</h2>
+          ${rangeBasisNote}
           <div class="table-container">
             <table class="results-table">
               <thead>
@@ -1063,16 +1041,28 @@ function renderResults(): void {
   });
 
   document.getElementById('downloadPerVan')?.addEventListener('click', () => {
-    const lines = ['van_id,depot,refrigerated,owned_or_leased,lease_end,p95_day_km,max_day_km,max_load_kg,annual_km,best_ev_model,status,reason'];
-    for (const [vanId, metrics] of result.vanMetrics.entries()) {
-      const van = result.vans.find(v => v.vanId === vanId);
-      if (van) {
-        const shortlistEntry = result.shortlist.find(s => s.vanId === vanId);
-        const status = shortlistEntry ? 'shortlisted' : 'excluded';
-        const reason = shortlistEntry ? `Rank ${shortlistEntry.rank}` : getExclusionReason(van, metrics);
-        const bestModel = findBestEVModel(van, metrics, result.vans) || '';
-        lines.push(`${vanId},${metrics.depot},${metrics.refrigerated ? 'yes' : 'no'},${van.ownedOrLeased},${van.leaseEndDate || ''},${metrics.p95DayKm.toFixed(1)},${metrics.maxDayKm},${metrics.maxLoadKg},${metrics.annualKm},${bestModel},${status},"${reason}"`);
-      }
+    const modelHeaders = appState.evModels.flatMap(m => [`${m.name} range_ok`, `${m.name} payload_ok`, `${m.name} saving_pln`]);
+    const header = ['van_id', 'depot', 'refrigerated', 'owned_or_leased', 'lease_end', 'p95_day_km', 'max_day_km', 'max_load_kg', 'annual_km', ...modelHeaders, 'best_ev_model', 'status', 'rank', 'exclusion_code', 'reason'];
+    const lines = [header.map(formatCsvValue).join(',')];
+    for (const e of result.evaluations) {
+      const { van, metrics } = e;
+      lines.push([
+        van.vanId,
+        van.depot,
+        van.refrigerated ? 'yes' : 'no',
+        van.ownedOrLeased,
+        van.leaseEndDate ?? '',
+        metrics.p95DayKm.toFixed(1),
+        metrics.maxDayKm.toFixed(1),
+        metrics.maxLoadKg,
+        metrics.annualKm,
+        ...e.models.flatMap(m => [m.rangeOk ? 'yes' : 'no', m.payloadOk ? 'yes' : 'no', m.savingPln ?? '']),
+        e.bestModel?.evModel ?? '',
+        e.status,
+        e.rank ?? '',
+        e.exclusionCode ?? '',
+        e.exclusionReason ?? '',
+      ].map(formatCsvValue).join(','));
     }
     downloadFile(lines.join('\n'), 'per-van.csv', 'text/csv;charset=utf-8');
   });
@@ -1082,68 +1072,10 @@ function renderResults(): void {
   });
 }
 
-function checkVanEVEligibility(van: Van, metrics: VanMetrics, evModel: EVModel): boolean {
-  if (appState.excludeRefrigerated && metrics.refrigerated) return false;
-
-  const usableRange = (appState.usableWltpShare / 100) * evModel.wltpRangeKm;
-  if (metrics.p95DayKm > usableRange) return false;
-
-  if (metrics.maxLoadKg > evModel.payloadKg) return false;
-
-  return true;
-}
-
-function findBestEVModel(van: Van, metrics: VanMetrics, _vans: Van[]): string | null {
-  let bestModel: string | null = null;
-  let bestSaving = 0;
-
-  for (const evModel of appState.evModels) {
-    if (!checkVanEVEligibility(van, metrics, evModel)) continue;
-
-    // Simple financial estimate for display
-    const dieselModel = appState.dieselModels.find(m => m.name === van.dieselModel);
-    if (!dieselModel) continue;
-
-    const dieselFuelCostPerKm = (dieselModel.fuelUseLper100km / 100) * appState.dieselPricePln;
-    const evChargingCostPerKm = (evModel.energyKwhPer100km / 100) * appState.nightTariffPln;
-    const annualOperatingSaving = metrics.annualKm * ((dieselFuelCostPerKm + appState.dieselMaintenancePln) - (evChargingCostPerKm + appState.evMaintenancePln));
-    const evNetCost = evModel.purchasePricePln * (1 - appState.grantPercentage / 100);
-    const saving = appState.evaluationYears * annualOperatingSaving - evNetCost;
-
-    if (saving > bestSaving) {
-      bestSaving = saving;
-      bestModel = evModel.name;
-    }
-  }
-
-  return bestModel;
-}
-
-function getExclusionReason(van: Van, metrics: VanMetrics): string {
-  if (appState.excludeRefrigerated && metrics.refrigerated) {
-    return 'Refrigerated van';
-  }
-
-  for (const evModel of appState.evModels) {
-    const usableRange = (appState.usableWltpShare / 100) * evModel.wltpRangeKm;
-    const rangeFit = metrics.p95DayKm <= usableRange;
-    const payloadFit = metrics.maxLoadKg <= evModel.payloadKg;
-
-    if (!rangeFit) {
-      return `Range: P95 ${metrics.p95DayKm.toFixed(1)} km exceeds 60% of ${evModel.name} (${usableRange.toFixed(0)} km)`;
-    }
-    if (!payloadFit) {
-      return `Payload: max load ${metrics.maxLoadKg} kg exceeds ${evModel.name} (${evModel.payloadKg} kg)`;
-    }
-  }
-
-  return 'No profitable model';
-}
-
 function initApp(): void {
   renderForm();
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
 
-export { analyzeFleet, type DieselModel, type EVModel, type CapConfig };
+export { analyzeFleet, type DieselModel, type EVModel, type AnalysisParams };

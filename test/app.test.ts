@@ -15,6 +15,13 @@ describe("GET /", () => {
     expect(res.text).toContain('<div id="app">');
   });
 
+  it("states that every van is checked against every EV model", async () => {
+    const res = await request(app).get("/");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("Every van is checked against every EV model for range, payload and 5-year saving.");
+  });
+
   describe("with a built client", () => {
     let dir: string;
 
