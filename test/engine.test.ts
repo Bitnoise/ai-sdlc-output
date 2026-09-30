@@ -594,5 +594,40 @@ describe("Calculation Engine", () => {
       const southCount = analysisResult.shortlist.filter((s) => s.evDepot === "South").length;
       expect(southCount).toBeLessThanOrEqual(capConfig.southRebaseCap);
     });
+
+    it("should produce valid check figures with sample data", () => {
+      const vanIds = new Set([...vans.map((v) => v.vanId), "P-17B"]);
+      const aliasMap = new Map([["P-17", "P-17B"]]);
+
+      const result = cleanTrips(rawTrips, vanIds, aliasMap);
+
+      const capConfig: CapConfig = {
+        grantCap: 10,
+        chargingPointsNorth: 10,
+        southRebaseCap: 3,
+      };
+
+      const analysisResult = analyzeFleet(
+        vans,
+        result.trips,
+        13,
+        dieselModels,
+        5.2,
+        0.34,
+        evModels,
+        0.14,
+        0.58,
+        0.3,
+        5,
+        "2026-06-15",
+        capConfig,
+        0.6
+      );
+
+      expect(analysisResult.checkFigures.vansAssessed).toBe(38);
+      expect(analysisResult.checkFigures.tripsCounted).toBeGreaterThan(0);
+      expect(analysisResult.checkFigures.totalKm).toBeGreaterThan(0);
+      expect(analysisResult.shortlist.length).toBeLessThanOrEqual(10);
+    });
   });
 });
