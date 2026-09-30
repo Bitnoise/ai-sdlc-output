@@ -1,0 +1,55 @@
+name: Deploy
+# ai-sdlc waits for this run by its title. Keep the "Deploy PR #<number>" format.
+run-name: Deploy PR #${{ github.event.pull_request.number }}
+
+# pull_request_target: the workflow file always comes from main, so a pull request
+# cannot change how the deploy secret is used. No pull request code is checked out.
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Render
+    if: github.event.label.name == 'ready_for_deployment' && github.event.pull_request.merged
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_URL: https://htn-login.onrender.com
+      COMMIT: ${{ github.event.pull_request.merge_commit_sha }}
+      DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+    steps:
+      - name: Trigger Render deploy of the merge commit
+        run: |
+          if [ -z "$DEPLOY_HOOK_URL" ]; then
+            echo "::error::Secret RENDER_DEPLOY_HOOK_URL is not set (Render > htn-login > Settings > Deploy Hook)."
+            exit 1
+          fi
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${DEPLOY_HOOK_URL}&ref=${COMMIT}")
+          echo "Render deploy hook answered HTTP $status for $COMMIT"
+          # 202: another deploy runs; Render starts this one after it.
+          if [ "$status" != "200" ] && [ "$status" != "202" ]; then
+            echo "::error::Render deploy hook failed with HTTP $status"
+            exit 1
+          fi
+
+      - name: Wait until the merge commit is live
+        run: |
+          deadline=$(( $(date +%s) + 20 * 60 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            live=$(curl -s -m 60 "$APP_URL/version" | jq -r '.commit // empty' 2>/dev/null || true)
+            if [ "$live" = "$COMMIT" ]; then
+              echo "Live on $APP_URL: $live"
+              exit 0
+            fi
+            echo "Live commit: ${live:-unknown}. Waiting for $COMMIT."
+            sleep 20
+          done
+          echo "::error::$COMMIT is not live on $APP_URL after 20 minutes. Check the deploy in the Render dashboard."
+          exit 1

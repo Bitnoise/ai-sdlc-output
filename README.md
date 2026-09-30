@@ -105,15 +105,22 @@ Then run `npm test` locally (not inside the container).
 
 ## Deployment
 
-### Deploy on Render (one-click)
+### Deploy on Render
 
-1. Push this repository to GitHub
-2. Go to https://render.com and click **New > Blueprint**
-3. Select this repository
-4. Render reads `render.yaml`, creates a PostgreSQL database, and deploys the app
-5. `DATABASE_URL` and `SESSION_SECRET` are set automatically
+`render.yaml` is a Render Blueprint: **New > Blueprint > select this repo** creates the PostgreSQL database and the web service, and sets `DATABASE_URL` and `SESSION_SECRET`. The app runs database migrations on startup.
 
-The app runs database migrations on startup, so no manual setup is needed.
+Auto-deploy is off (`autoDeployTrigger: "off"`). Production deploys only from `.github/workflows/deploy.yml`:
+
+1. A pull request is merged into `main`.
+2. Someone (the ai-sdlc agent, or a human) adds the label `ready_for_deployment` to the merged pull request.
+3. The workflow calls the Render deploy hook with the merge commit (`ref=<merge commit>`).
+4. It polls `GET /version` on https://htn-login.onrender.com until `commit` is the merge commit, for at most 20 minutes. The run fails if the commit does not go live.
+
+The label on an open (not merged) pull request does nothing.
+
+One-time setup: copy the deploy hook URL from **Render > htn-login > Settings > Deploy Hook** into the repository secret `RENDER_DEPLOY_HOOK_URL`.
+
+`GET /version` returns `{"commit": "<sha>"}` from Render's `RENDER_GIT_COMMIT`, and `null` outside Render.
 
 ### Deploy elsewhere
 

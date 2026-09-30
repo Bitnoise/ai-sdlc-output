@@ -30,6 +30,24 @@ describe("GET /", () => {
   });
 });
 
+describe("GET /version", () => {
+  it("returns the deployed commit", async () => {
+    process.env.RENDER_GIT_COMMIT = "abc123";
+
+    const res = await request(app).get("/version");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ commit: "abc123" });
+    delete process.env.RENDER_GIT_COMMIT;
+  });
+
+  it("returns null outside Render", async () => {
+    const res = await request(app).get("/version");
+
+    expect(res.body).toEqual({ commit: null });
+  });
+});
+
 describe("POST /register", () => {
   it("creates the user, logs them in and shows the home page", async () => {
     const agent = request.agent(app);

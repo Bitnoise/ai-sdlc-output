@@ -11,6 +11,8 @@ services:
     runtime: docker
     plan: free
     healthCheckPath: /health
+    # Deploys come only from .github/workflows/deploy.yml (label ready_for_deployment on a merged PR).
+    autoDeployTrigger: "off"
     envVars:
       - key: DATABASE_URL
         fromDatabase:
