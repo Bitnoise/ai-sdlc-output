@@ -1,6 +1,7 @@
 name: Deploy
 # ai-sdlc waits for this run by its title. Keep the "Deploy PR #<number>" format.
-run-name: Deploy PR #${{ github.event.pull_request.number }}
+# Keep the quotes: without them, YAML reads " #..." as a comment and the title is only "Deploy PR".
+run-name: "Deploy PR #${{ github.event.pull_request.number }}"
 
 # pull_request_target: the workflow file always comes from main, so a pull request
 # cannot change how the deploy secret is used. No pull request code is checked out.
