@@ -6,8 +6,10 @@ A single-page, browser-only web app for analyzing which delivery vans in a fleet
 
 The application is a single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles.
 
+**Serving:** the deployed service is a small static server. `GET /` returns the built single-page app (`dist/client/index.html`, titled "Which Vans Go Electric?") and its assets; `/health` and `/version` exist only for the deploy workflow. The page shows the "Which Vans Go Electric?" heading straight from the server HTML; the browser script then renders Screen 1. The server never receives uploaded files or results.
+
 **User Workflow:**
-1. User opens the app and sees Screen 1 — a parameters form with all fields pre-filled with documented defaults
+1. User opens the app and sees Screen 1 — a parameters form with all fields pre-filled with documented defaults (e.g. diesel price 5.20 PLN/L, Volta Cargo S and Volta Cargo L rows) and the `vans.csv` / `trips.csv` upload inputs, with Run disabled
 2. User uploads van register (`vans.csv`) and trip history (`trips.csv`); the app validates CSV headers and shows clear errors if columns are missing or data is unparseable
 3. Run button is enabled only when both files are valid and uploaded
 4. User clicks Run, which:
@@ -101,7 +103,7 @@ The static build (`npm run build` → `dist/client/`) can be hosted anywhere:
 - **GitHub Pages**: Push `dist/client/` to `gh-pages` branch
 - **Netlify**: Connect repo, set build command `npm run build`, publish directory `dist/client`
 - **Vercel**: Connect repo, it auto-detects Vite
-- **Render**: Create Static Site service, build command `npm run build`, publish directory `dist/client`
+- **Render (current production)**: the `Dockerfile` builds the app (`tsc` + `vite build`) and runs `node dist/server.js`, an Express server that serves `dist/client` at `/` plus `/health` and `/version` for the deploy workflow. Set `CLIENT_DIR` to serve the client from another directory.
 - **Any CDN or web server**: Copy contents of `dist/client/` to your static host
 
-No backend needed — the app runs entirely in the browser with no server-side dependencies.
+No backend logic is needed — the server only hands out static files; the app runs entirely in the browser.
