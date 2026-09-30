@@ -142,7 +142,7 @@ function parseTripsCsv(file: File): Promise<void> {
 
           for (let i = 0; i < results.data.length; i++) {
             const row = results.data[i];
-            const vanId = row.van_id?.toString().trim();
+            const vanId = row.van_id?.toString().trim() ?? '';
             const remappedId = aliasMap.get(vanId) || vanId;
 
             if (!vanIds.has(remappedId)) {
