@@ -776,11 +776,11 @@ async function runAnalysis(): Promise<void> {
     appState.evModels,
     appState.evMaintenancePln,
     appState.nightTariffPln,
-    appState.grantPercentage,
+    appState.grantPercentage / 100,
     appState.evaluationYears,
     appState.analysisDate,
     capConfig,
-    appState.usableWltpShare
+    appState.usableWltpShare / 100
   );
 
   // Store full cleaning result metadata
