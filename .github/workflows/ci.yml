@@ -37,3 +37,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t htn-login .
+      # The image must also start: a build that passes can still have no dist/server.js.
+      # PORT=10000 as on Render.
+      - name: Start the container and check /health and /version
+        run: |
+          docker run -d --name app -e PORT=10000 -e RENDER_GIT_COMMIT=ci-smoke -p 3000:10000 htn-login
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:3000/health; then
+              echo
+              curl -fs http://localhost:3000/version | grep -q '"ci-smoke"' && exit 0
+              echo "::error::/version does not return RENDER_GIT_COMMIT"
+              break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' app)" != "true" ]; then
+              echo "::error::The container stopped."
+              break
+            fi
+            sleep 1
+          done
+          echo "::error::The app did not answer on /health. Container log:"
+          docker logs app
+          exit 1

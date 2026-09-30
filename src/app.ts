@@ -1,5 +1,5 @@
 import express, { NextFunction, Request, Response } from "express";
-import { homePage } from "./views";
+import { homePage } from "./views.js";
 
 export const app = express();
 

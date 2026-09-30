@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc -p tsconfig.build.json && vite build",
     "preview": "vite preview",
+    "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "jest --runInBand"
