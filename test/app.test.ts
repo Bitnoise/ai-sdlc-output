@@ -43,6 +43,13 @@ describe("GET /", () => {
     expect(res.text).toContain("worst day fits within 60% of the EV WLTP range");
   });
 
+  it("offers the impact report against the lunch shortlist", async () => {
+    const res = await request(app).get("/");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("upload the lunch shortlist.csv to see which vans entered or left");
+  });
+
   describe("with a built client", () => {
     let dir: string;
 
