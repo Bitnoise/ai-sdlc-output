@@ -13,6 +13,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm ci --omit=dev
+# dist/server.js serves the browser app from dist/client (resolved from WORKDIR /app).
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 3000
