@@ -92,6 +92,7 @@ export const DEFAULT_PARAMS: AnalysisParams = {
 };
 
 export interface DistanceRepair {
+  file?: string;
   line: number;
   vanId: string;
   date: string;
@@ -100,6 +101,7 @@ export interface DistanceRepair {
 }
 
 export interface DroppedRow {
+  file?: string;
   line: number;
   vanId: string;
   date: string;
@@ -222,7 +224,8 @@ export function resolveVanId(vanId: string, aliasMap: Map<string, string>, vanId
 export function cleanTrips(
   rawTrips: Array<Record<string, unknown>>,
   vanIds: Set<string>,
-  aliasMap: Map<string, string>
+  aliasMap: Map<string, string>,
+  sources?: Array<{ file: string; line: number }>
 ): CleaningResult {
   const seen = new Set<string>();
   let exactDuplicatesRemoved = 0;
@@ -234,7 +237,9 @@ export function cleanTrips(
   const cleanedTrips: Trip[] = [];
 
   rawTrips.forEach((row, index) => {
-    const line = index + 2; // header is line 1
+    // Header is line 1; combined exports carry their own file and line.
+    const line = sources?.[index]?.line ?? index + 2;
+    const file = sources?.[index]?.file;
     const signature = Object.keys(row)
       .map((key) => String(row[key] ?? "").trim())
       .join("\u0001");
@@ -247,7 +252,7 @@ export function cleanTrips(
     const rawId = String(row.van_id ?? "").trim();
     const date = String(row.date ?? "").trim();
     if (!rawId || !date) {
-      dropped.push({ line, vanId: rawId, date, reason: "missing van_id or date" });
+      dropped.push({ file, line, vanId: rawId, date, reason: "missing van_id or date" });
       return;
     }
 
@@ -255,7 +260,7 @@ export function cleanTrips(
     if (vanId !== rawId) aliasRemaps++;
     if (!vanIds.has(vanId)) {
       unknownVanIds.add(rawId);
-      dropped.push({ line, vanId: rawId, date, reason: "van_id not in the register" });
+      dropped.push({ file, line, vanId: rawId, date, reason: "van_id not in the register" });
       return;
     }
 
@@ -270,9 +275,9 @@ export function cleanTrips(
       distanceKm = odometerKm;
     } else if (gpsKm !== null) {
       distanceKm = gpsKm;
-      repairs.push({ line, vanId, date, odometerRaw: String(row.odometer_km ?? "").trim(), gpsKm });
+      repairs.push({ file, line, vanId, date, odometerRaw: String(row.odometer_km ?? "").trim(), gpsKm });
     } else {
-      dropped.push({ line, vanId, date, reason: "both odometer_km and gps_km unusable" });
+      dropped.push({ file, line, vanId, date, reason: "both odometer_km and gps_km unusable" });
       return;
     }
 
@@ -644,6 +649,9 @@ export function generateAssumptions(params: AnalysisParams): string[] {
   const years = params.evaluationYears;
 
   return [
+    "Trip exports are combined into one history (e.g. trips.csv + trips_latest.csv); exact duplicate rows across files are removed once. The latest van register (e.g. vans_latest.csv) replaces earlier ones.",
+    "Vendor headers model, ownership and odo_km are read as diesel_model, owned_or_leased and odometer_km; values are unchanged.",
+    ...aliases.map((a) => `${a.from} in the older trips export is the van registered as ${a.to}; the normalized trips.csv writes ${a.to}.`),
     "Exact duplicate trip rows (all columns identical) are removed.",
     `Van IDs in trips are remapped by the alias table (${aliasText}); an alias applies only when its target is in the register.`,
     "Trip distance = odometer_km (authoritative); GPS is used only as a fallback when the odometer is missing, not a number or <= 0, and the row is dropped if both are unusable. A blank gps_km alone is fine.",
