@@ -380,6 +380,19 @@
       font-weight: 600;
       margin-bottom: 8px;
     }
+    .field-hint {
+      font-size: 12px;
+      color: #666;
+      margin-top: 4px;
+    }
+    .quality-list {
+      margin: 4px 0 0 20px;
+      font-size: 13px;
+    }
+    .totals-row td {
+      font-weight: 700;
+      border-top: 2px solid #ddd;
+    }
     .app-footer {
       text-align: center;
       font-size: 13px;
@@ -398,7 +411,10 @@
       <noscript><div class="form">This app needs JavaScript. All calculations run in your browser; no data is uploaded.</div></noscript>
     </div>
   </div>
-  <footer class="app-footer"><p>Every van is checked against every EV model for range, payload and 5-year saving.</p></footer>
+  <footer class="app-footer">
+    <p>Every van is checked against every EV model for range, payload and 5-year saving.</p>
+    <p>Results include a data quality report, check figures, the shortlist, assumptions and CSV downloads.</p>
+  </footer>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

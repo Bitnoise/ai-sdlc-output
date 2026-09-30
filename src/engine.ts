@@ -52,6 +52,12 @@ export interface AnalysisParams {
   analysisDate: string; // YYYY-MM-DD
   excludeRefrigerated: boolean;
   exportWeeks: number;
+  aliasList: VanAlias[];
+}
+
+export interface VanAlias {
+  from: string;
+  to: string;
 }
 
 export const DEFAULT_PARAMS: AnalysisParams = {
@@ -82,6 +88,7 @@ export const DEFAULT_PARAMS: AnalysisParams = {
   analysisDate: new Date().toISOString().slice(0, 10),
   excludeRefrigerated: true,
   exportWeeks: 13,
+  aliasList: [{ from: "P-17", to: "P-17B" }],
 };
 
 export interface DistanceRepair {
@@ -301,6 +308,23 @@ export function percentile(values: number[], p: number): number {
   return sorted[lower] + (pos - lower) * (sorted[upper] - sorted[lower]);
 }
 
+/** Export length in whole weeks from the first to the last valid trip date (both days included). */
+export function deriveExportWeeks(rawTrips: Array<Record<string, unknown>>): number {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const row of rawTrips) {
+    const text = String(row.date ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) continue;
+    const time = Date.parse(`${text}T00:00:00Z`);
+    if (!Number.isFinite(time)) continue;
+    min = Math.min(min, time);
+    max = Math.max(max, time);
+  }
+  if (!Number.isFinite(min)) return 0;
+  const days = (max - min) / 86400000 + 1;
+  return Math.ceil(days / 7);
+}
+
 const round1 = (value: number): number => Math.round(value * 10) / 10;
 
 export function calculateVanMetrics(
@@ -418,7 +442,8 @@ export function evaluateModel(
   };
 }
 
-const sharePct = (params: AnalysisParams): number => Math.round(params.usableWltpShare * 10000) / 100;
+const pct = (share: number): number => Math.round(share * 10000) / 100;
+const sharePct = (params: AnalysisParams): number => pct(params.usableWltpShare);
 const rangeLabel = (params: AnalysisParams): string =>
   `P${params.rangePercentile} ${params.middayTopup ? "route" : "day"}`;
 
@@ -593,25 +618,68 @@ export function generateShortlistCsv(shortlist: ShortlistEntry[]): string {
   return lines.join("\n");
 }
 
-export function generateSummaryCsv(
-  vansAssessed: number,
-  tripsCounted: number,
-  totalKm: number,
-  recommendedCount: number,
-  annualFuelSavingPln: number,
-  savingPln: number
-): string {
-  const basis =
-    "5-year operating saving (diesel fuel + maintenance minus night-tariff charging + EV maintenance) minus EV purchase price net of 30% grant minus diesel lease exit fees; excludes diesel lease payments and resale";
+export function savingBasis(params: AnalysisParams): string {
+  return `${params.evaluationYears}-year operating saving (diesel fuel + maintenance minus night-tariff charging + EV maintenance) minus EV purchase price net of ${pct(params.grantShare)}% grant minus diesel lease exit fees; excludes diesel lease payments and resale`;
+}
+
+export function generateSummaryCsv(result: AnalysisResult, params: AnalysisParams): string {
+  const rows: Array<[string, string | number]> = [
+    ["vans_assessed", result.checkFigures.vansAssessed],
+    ["trips_counted", result.checkFigures.tripsCounted],
+    ["total_km", result.checkFigures.totalKm],
+    ["recommended_count", result.summary.recommendedCount],
+    ["annual_fuel_saving_pln", result.summary.annualFuelSavingPln],
+    ["saving_pln", result.summary.savingPln],
+    ["saving_basis", savingBasis(params)],
+  ];
+  return ["figure,value", ...rows.map(([figure, value]) => `${figure},${formatCsvValue(value)}`)].join("\n");
+}
+
+/** One human-readable line per business rule, built from the parameters used for the run. */
+export function generateAssumptions(params: AnalysisParams): string[] {
+  const aliases = params.aliasList.filter((a) => a.from.trim() && a.to.trim());
+  const aliasText = aliases.length > 0 ? aliases.map((a) => `${a.from} -> ${a.to}`).join(", ") : "none";
+  const usable = sharePct(params);
+  const grant = pct(params.grantShare);
+  const years = params.evaluationYears;
 
   return [
-    "figure,value",
-    `vans_assessed,${vansAssessed}`,
-    `trips_counted,${tripsCounted}`,
-    `total_km,${totalKm}`,
-    `recommended_count,${recommendedCount}`,
-    `annual_fuel_saving_pln,${annualFuelSavingPln}`,
-    `saving_pln,${savingPln}`,
-    `saving_basis,"${basis}"`,
-  ].join("\n");
+    "Exact duplicate trip rows (all columns identical) are removed.",
+    `Van IDs in trips are remapped by the alias table (${aliasText}); an alias applies only when its target is in the register.`,
+    "Trip distance = odometer_km (authoritative); GPS is used only as a fallback when the odometer is missing, not a number or <= 0, and the row is dropped if both are unusable. A blank gps_km alone is fine.",
+    "trips_counted = trip rows left after cleaning; total_km = sum of their distances, rounded to whole km.",
+    params.middayTopup
+      ? "Midday top-up allowed: range checked per route, not per day."
+      : "A van's day is the sum of all its routes on that date (double-route days summed); no midday top-up between routes.",
+    "Only dates on which the van actually drove count as days.",
+    `Range check = P${params.rangePercentile} of the van's ${params.middayTopup ? "route" : "daily"} km (linear interpolation, like Excel PERCENTILE.INC), 1 decimal.`,
+    "Max load = the heaviest max_load_kg the van carried in the export.",
+    `Annual km = van's total cleaned km / ${params.exportWeeks} export weeks x 52, integer.`,
+    params.excludeRefrigerated
+      ? "Refrigerated vans are excluded in year 1 (the fridge unit drains the battery)."
+      : "Refrigerated vans are included (the exclude-refrigerated toggle is off).",
+    `Range OK when the range check km <= ${usable}% of the EV model's WLTP range.`,
+    "Payload OK when the van's max load <= the EV model's payload.",
+    `North vans stay at North; South vans are re-based to North (they keep their routes), at most ${params.southRebaseCap} of them.`,
+    `Charging points: North ${params.chargingPointsNorth}, South ${params.chargingPointsSouth}; one EV per charging point, overnight only.`,
+    `Diesel fuel cost/km = fuel use L/100 km / 100 x ${params.dieselPricePln} PLN/L (by the van's diesel model).`,
+    `EV charging cost/km = energy kWh/100 km / 100 x night tariff ${params.nightTariffPln} PLN/kWh (overnight charging).`,
+    `Maintenance: diesel ${params.dieselMaintenancePln} PLN/km, EV ${params.evMaintenancePln} PLN/km.`,
+    "annual_fuel_saving_pln = annual km x (diesel fuel cost/km - EV charging cost/km), integer.",
+    "Annual operating saving = annual km x [(diesel fuel + diesel maintenance)/km - (EV charging + EV maintenance)/km].",
+    `EVs are bought, not leased: EV net cost = purchase price x (1 - ${grant}%); grant cap ${params.grantCap} EVs.`,
+    `Diesel lease exit fee = ${params.leaseExitFeeMonths} x monthly lease, or 0 when the lease ends within ${params.leaseWindowMonths} months of ${params.analysisDate}; owned diesels pay no fee.`,
+    `saving_pln = ${years} years x annual operating saving - EV net cost - lease exit fee, integer; excludes diesel lease payments and resale values.`,
+    "Best model = the EV model that passes range and payload with the highest saving.",
+    `Shortlist: vans with a positive saving, sorted by saving (ties: higher annual km, then van ID), taken while caps allow (grant ${params.grantCap}, North charging points ${params.chargingPointsNorth}, South re-base ${params.southRebaseCap}).`,
+    "Grant: re-based South vans are assumed grant-eligible; fridge vans are excluded anyway. Leased EVs are never proposed.",
+    "Double-route days summed, no midday top-up by default.",
+    "Odometer preferred over GPS; GPS only as fallback.",
+    "Annualisation from a summer export (15 Jun–13 Sep); no seasonal uplift; no Christmas load uplift beyond what the export shows. Route changes are not assumed (vans keep their routes).",
+    "Open questions for Ewa next time: grant rules for South/fridge vans, real winter range, midday charging at North, fridge-unit energy use.",
+  ];
+}
+
+export function generateAssumptionsMd(lines: string[]): string {
+  return ["# Assumptions", "", ...lines.map((line) => `- ${line}`), ""].join("\n");
 }

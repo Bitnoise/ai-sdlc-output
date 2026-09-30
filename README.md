@@ -6,11 +6,11 @@ A single-page, browser-only web app for analyzing which delivery vans in a fleet
 
 The application is a single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles.
 
-**Serving:** the deployed service is a small static server. `GET /` returns the built single-page app (`dist/client/index.html`, titled "Which Vans Go Electric?") and its assets; `/health` and `/version` exist only for the deploy workflow. The page shows the "Which Vans Go Electric?" heading and the footer line "Every van is checked against every EV model for range, payload and 5-year saving." straight from the server HTML; the browser script then renders Screen 1 above the footer. The server never receives uploaded files or results.
+**Serving:** the deployed service is a small static server. `GET /` returns the built single-page app (`dist/client/index.html`, titled "Which Vans Go Electric?") and its assets; `/health` and `/version` exist only for the deploy workflow. The page shows the "Which Vans Go Electric?" heading and two footer lines — "Every van is checked against every EV model for range, payload and 5-year saving." and "Results include a data quality report, check figures, the shortlist, assumptions and CSV downloads." — straight from the server HTML; the browser script then renders Screen 1 above the footer. The server never receives uploaded files or results.
 
 **User Workflow:**
 1. User opens the app and sees Screen 1 — a parameters form with all fields pre-filled with documented defaults (e.g. diesel price 5.20 PLN/L, Volta Cargo S and Volta Cargo L rows) and the `vans.csv` / `trips.csv` upload inputs, with Run disabled
-2. User uploads van register (`vans.csv`) and trip history (`trips.csv`); the app validates CSV headers and shows clear errors if columns are missing or data is unparseable
+2. User uploads van register (`vans.csv`) and trip history (`trips.csv`); the app validates CSV headers and shows clear errors if columns are missing or data is unparseable. After `trips.csv` is accepted, the export length in weeks is auto-derived from the first and last trip date, rounded up to whole weeks (13 for the sample export), with the hint "auto-derived from trip dates"; the user can still edit it
 3. Run button is enabled only when both files are valid and uploaded
 4. User clicks Run, which:
    - Parses CSVs with PapaParse (header: true, skipEmptyLines: true)
@@ -29,15 +29,15 @@ The application is a single-page, browser-only web app for analyzing which deliv
 - **Financing**: 5-year evaluation horizon, grant 30% of purchase (max 10 EVs), lease exit fee 3 months, "lease ends soon" 12-month window, analysis date (today by default).
 - **Exclusions & Data Cleaning**: Toggle to exclude refrigerated vans, export length in weeks (auto-derived, default 13), van ID alias table for remapping (default P-17 → P-17B).
 - **File Uploads**: Validate `vans.csv` and `trips.csv` headers and types; show clear errors for missing columns, unparseable numbers, and unknown van IDs in trips. Run button disabled until both files valid.
-- **Settings**: Save all parameters as JSON; load JSON to restore parameters for next quarter's analysis.
+- **Settings**: Save all parameters as `settings.json`; load it to restore parameters for next quarter's analysis. A file that is not valid settings JSON shows an error and leaves the form unchanged.
 
-**Screen 2 — Results** displays the analysis output:
-- **Data Quality Report**: Shows rows read, exact duplicates removed, number of rows remapped by alias, distances repaired (odometer → GPS fallbacks), invalid rows removed, and unknown van IDs encountered.
-- **Check Figures**: Vans assessed, trips counted (after deduplication and cleaning), total kilometers traveled.
+**Screen 2 — Results** displays the analysis output. Everything on it, and every download, uses the parameters in effect when Run was clicked:
+- **Data Quality Report**: rows read, exact duplicates removed, rows remapped by alias (with the alias pairs), distances repaired (count plus line / van / date / raw odometer → GPS km for each), blank `gps_km` (rows kept), rows dropped (count plus line and reason for each), unknown van IDs, and the export length in weeks.
+- **Check Figures**: Vans assessed, trips counted (after deduplication and cleaning), total km — plain integers without thousands separators (38 / 2777 / 344952 for the full sample export).
 - **Per-Van Analysis Table**: All vans in register order with depot, refrigerated flag, owned/leased, lease end date, P95 daily km, max day km, max load carried and annualized km; then for each EV model three columns — "range OK", "payload OK" and "5-yr saving (PLN)"; then the best EV model, the status ("Shortlisted #rank" or "Excluded") and the exclusion reason. When midday top-up is on, a note above the table says "Midday top-up on: range checked per route, not per day".
-- **Shortlist Table**: Ranked recommendations (1 to N) showing van ID, EV model, EV depot (North, including re-based South vans), range check km, annual km, annual fuel saving in PLN, 5-year total saving in PLN, and one-line reason (e.g., "Owned North van, P95 day 145 km fits 60% of Volta Cargo S range, saves 21,710 PLN over 5 years"; re-based vans read "South van re-based to North").
-- **Assumptions List**: Human-readable summary of all parameters and business rules applied to the analysis (diesel price, EV models, maintenance costs, electricity tariffs, grant cap, charging infrastructure, range rule, financing horizon, lease exit fees, exclusions, analysis date, annualization method, odometer preference).
-- **Downloads**: Buttons to download `shortlist.csv` (CSV with correct formatting: UTF-8, comma delimiter, dot decimals, no thousands separators), `summary.csv` (figure/value pairs), `assumptions.md`, `settings.json` (parameters for next quarter), and optional `per-van.csv` (all vans with metrics).
+- **Shortlist Table**: Ranked recommendations (1 to N) showing van ID, EV model, EV depot (North, including re-based South vans), range check km, annual km, annual fuel saving in PLN, 5-year total saving in PLN, and one-line reason (e.g., "Owned North van, P95 day 145 km fits 60% of Volta Cargo S range, saves 21,710 PLN over 5 years"; re-based vans read "South van re-based to North"). A totals row gives the number of recommended vans, the summed annual fuel saving and the summed horizon saving; an empty shortlist reads "No van qualifies".
+- **Assumptions List**: one human-readable line per business rule, generated from the run's parameters (cleaning, alias pairs, odometer/GPS rule, what a day is or "Midday top-up allowed: range checked per route, not per day", percentile, annualisation weeks, refrigerated toggle, usable WLTP share, depot and charging caps, costs and tariffs, grant share and cap, lease exit fee and window with the analysis date, horizon, shortlist order), plus the extra assumptions (grant for re-based South vans, leased EVs never proposed, double-route days summed, odometer over GPS, summer export 15 Jun–13 Sep with no seasonal uplift, vans keep their routes) and the open questions for Ewa.
+- **Downloads**: `shortlist.csv` (UTF-8, comma delimiter, dot decimals, no thousands separators, text with commas quoted), `summary.csv` (`figure,value` rows in order vans_assessed, trips_counted, total_km, recommended_count, annual_fuel_saving_pln, saving_pln, saving_basis; saving_basis states the horizon and grant %), `assumptions.md` (the assumptions list as `# Assumptions` bullets), `settings.json` (parameters of the run, loadable next quarter) and `per-van.csv` (all vans with metrics, per-model checks, status and reason).
 - **Back to Parameters**: Button to return to Screen 1, preserving parameters and allowing re-runs with different data or settings.
 
 **Calculation Engine** (all client-side, no backend calls):
@@ -50,6 +50,45 @@ The engine (`src/engine.ts`) implements all business rules in pure TypeScript an
 - **Shortlist**: vans with a positive saving, sorted by saving (ties: higher annual km, then van ID), taken in order while caps allow: grant cap (10 EVs), charging points per depot (North 10), and South vans. While South has no charging points, South vans are re-based to North (they keep their routes) and at most 3 of them are taken.
 
 **Data Privacy**: No network requests; all parsing and computation happens client-side, and uploaded data never leaves the browser.
+
+## Analyst guide
+
+### Run or build the app
+
+- Local: `npm install`, then `npm run dev` and open http://localhost:3000.
+- Static build: `npm run build`, then host the contents of `dist/client/` on any static host (or open the production URL). No data is sent anywhere.
+
+### Rerun next quarter
+
+1. Open the app and click **Load Settings**; pick the `settings.json` saved from the last run.
+2. Upload the new `vans.csv` and `trips.csv` (same columns as the sample files). Fix any upload errors — missing columns, unusable distances, or van IDs that are neither in the register nor covered by an alias. A renamed plate needs a new row in the **Van ID Aliases** table.
+3. Check **Export Length (weeks)**: it is re-derived from the new trip dates; correct it if the export has gaps at the start or end.
+4. Check the **Analysis Date** (loaded settings keep the old date) and any changed prices or offers.
+5. Click **Run Analysis**. Read the data quality report first (duplicates, alias remaps, repaired distances, dropped rows, unknown IDs), then the check figures.
+6. Download `shortlist.csv`, `summary.csv`, `assumptions.md`, `settings.json` (and `per-van.csv` if needed).
+
+### Parameters
+
+| Parameter | Meaning | Default |
+|---|---|---|
+| Diesel price | PLN per litre of diesel | 5.20 |
+| Diesel models | fuel use L/100 km and rated payload per diesel model in `vans.csv` | Brona D35 9.6/1150, Brona D35 Long 10.9/1050, Kestrel Cargo 3.5 11.8/1300 |
+| Maintenance (diesel / EV) | PLN per km | 0.34 / 0.14 |
+| EV models | WLTP range, payload, energy kWh/100 km, purchase price, monthly lease, lease months | Volta Cargo S 260/1050/24/150000/2900/60, Volta Cargo L 380/880/27/195000/3770/60 |
+| Night / day tariff | PLN per kWh; charging is overnight at the night tariff | 0.58 / 0.92 |
+| North / South charging points | one EV per point, overnight only | 10 / 0 |
+| Max South vans re-based to North | South vans may go electric only by re-basing at North | 3 |
+| Percentile | percentile of daily km used as the range check | 95 |
+| Usable WLTP share | share of WLTP range the range check must fit in | 60% |
+| Midday top-up | when on, each route is checked instead of the day total | off |
+| Evaluation horizon | years of operating saving counted | 5 |
+| Grant % / grant max | grant on the EV purchase price; max number of EVs with a grant | 30% / 10 |
+| Lease exit fee multiplier | months of diesel lease paid to leave a lease early | 3 |
+| "Lease ends soon" window | leases ending within this many months after the analysis date pay no exit fee | 12 |
+| Analysis date | reference date for the lease window | today |
+| Exclude refrigerated vans | fridge vans are out for year 1 | on |
+| Export length (weeks) | used to annualise km (total km / weeks × 52) | derived from trip dates (13 for the sample) |
+| Van ID aliases | trip van IDs remapped to register IDs | P-17 → P-17B |
 
 ## Tech Stack
 
@@ -100,7 +139,7 @@ The engine is fully unit-tested. Tests use the fixtures `test/fixtures/vans.csv`
 npm test
 ```
 
-Tests verify: duplicate removal, alias remapping, odometer repair, summing two routes into one day, percentile calculation, midday top-up (per-route range check), lease exit fee window, exclusion codes, cap enforcement (grant, charger, South), and CSV formatting (no thousands separators, dot decimals, correct column order, quoting). The acceptance check figures for the full sample export (`vans_assessed=38`, `trips_counted=2777`, `total_km=344952`, 222 duplicates) are asserted when `test/fixtures/trips.csv` holds that full export (2999 data rows); the fixture committed now is a shorter excerpt, so that test is skipped. Refrigerated vans (P-03, P-07, P-19, P-23, P-34, P-35) are never shortlisted.
+Tests verify: duplicate removal, alias remapping, odometer repair, summing two routes into one day, percentile calculation, midday top-up (per-route range check), lease exit fee window, exclusion codes, cap enforcement (grant, charger, South), CSV formatting (no thousands separators, dot decimals, correct column order, quoting, summary row order and saving_basis), export weeks derivation, and assumptions generated from changed parameters. The acceptance check figures for the full sample export (`vans_assessed=38`, `trips_counted=2777`, `total_km=344952`, 222 duplicates, 13 export weeks) are asserted when `test/fixtures/trips.csv` holds that full export (2999 data rows); the fixture committed now is a shorter excerpt (124 rows), so those two tests are skipped. Refrigerated vans (P-03, P-07, P-19, P-23, P-34, P-35) are never shortlisted.
 
 ## Deployment
 

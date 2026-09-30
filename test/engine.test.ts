@@ -9,9 +9,13 @@ import {
   analyzeFleet,
   generateShortlistCsv,
   generateSummaryCsv,
+  generateAssumptions,
+  generateAssumptionsMd,
+  deriveExportWeeks,
   formatCsvValue,
   DEFAULT_PARAMS,
   AnalysisParams,
+  AnalysisResult,
   Van,
 } from "../src/engine";
 
@@ -332,8 +336,22 @@ describe("CSV formatting", () => {
     expect(formatCsvValue(12.5)).toBe("12.5");
   });
 
-  it("writes summary rows in order", () => {
-    const lines = generateSummaryCsv(38, 2777, 344952, 10, 50000, 200000).split("\n");
+  it("keeps 9 fields per shortlist row when the reason holds commas", () => {
+    const rows = Papa.parse(generateShortlistCsv([entry, { ...entry, rank: 2, vanId: "P-02", rangeCheckKm: 99.25 }]), { skipEmptyLines: true })
+      .data as string[][];
+    expect(rows.every((r) => r.length === 9)).toBe(true);
+    expect(rows[1][8]).toBe(entry.reason);
+    expect(rows[2][4]).toBe("99.3");
+  });
+
+  const result = {
+    checkFigures: { vansAssessed: 38, tripsCounted: 2777, totalKm: 344952 },
+    summary: { recommendedCount: 10, annualFuelSavingPln: 123456, savingPln: 1234567 },
+  } as unknown as AnalysisResult;
+
+  it("writes summary rows in order without thousands separators", () => {
+    const csv = generateSummaryCsv(result, params());
+    const lines = csv.split("\n");
     expect(lines.map((l) => l.split(",")[0])).toEqual([
       "figure",
       "vans_assessed",
@@ -344,6 +362,73 @@ describe("CSV formatting", () => {
       "saving_pln",
       "saving_basis",
     ]);
-    expect(lines[3]).toBe("total_km,344952");
+    expect(lines.slice(1, 7)).toEqual([
+      "vans_assessed,38",
+      "trips_counted,2777",
+      "total_km,344952",
+      "recommended_count,10",
+      "annual_fuel_saving_pln,123456",
+      "saving_pln,1234567",
+    ]);
+    const rows = Papa.parse(csv, { skipEmptyLines: true }).data as string[][];
+    expect(rows.every((r) => r.length === 2)).toBe(true);
+  });
+
+  it("builds saving_basis from the horizon and grant share", () => {
+    const basis = (p: AnalysisParams) => (Papa.parse(generateSummaryCsv(result, p)).data as string[][])[7][1];
+    expect(basis(params())).toBe(
+      "5-year operating saving (diesel fuel + maintenance minus night-tariff charging + EV maintenance) minus EV purchase price net of 30% grant minus diesel lease exit fees; excludes diesel lease payments and resale"
+    );
+    const changed = basis(params({ evaluationYears: 7, grantShare: 0.2 }));
+    expect(changed).toContain("7-year operating saving");
+    expect(changed).toContain("20% grant");
+  });
+});
+
+describe("deriveExportWeeks", () => {
+  const dated = (...dates: string[]) => dates.map((date) => ({ date }));
+
+  it("rounds the trip date span up to whole weeks", () => {
+    expect(deriveExportWeeks(dated("2026-06-15", "2026-07-20", "2026-09-13"))).toBe(13);
+    expect(deriveExportWeeks(dated("2026-06-15", "2026-06-21"))).toBe(1);
+    expect(deriveExportWeeks(dated("2026-06-15", "2026-06-22"))).toBe(2);
+  });
+
+  it("gives 1 for a single date and ignores invalid dates", () => {
+    expect(deriveExportWeeks(dated("2026-07-01"))).toBe(1);
+    expect(deriveExportWeeks(dated("2026-07-01", "not a date", "", "2027-13-45"))).toBe(1);
+    expect(deriveExportWeeks(dated("nonsense"))).toBe(0);
+  });
+
+  const rawTrips = loadFixture("trips.csv");
+  (rawTrips.length === 2999 ? it : it.skip)("gives 13 for the full sample export", () => {
+    expect(deriveExportWeeks(rawTrips)).toBe(13);
+  });
+});
+
+describe("generateAssumptions", () => {
+  const text = (p: AnalysisParams) => generateAssumptions(p).join("\n");
+
+  it("describes the default rules, extra assumptions and open questions", () => {
+    const lines = generateAssumptions(params());
+    const all = lines.join("\n");
+    for (const expected of ["P95", "60%", "30%", "5 years", "P-17 -> P-17B", "2026-09-30", "no midday top-up", "Odometer preferred over GPS", "15 Jun–13 Sep", "Leased EVs are never proposed", "Open questions for Ewa"]) {
+      expect(all).toContain(expected);
+    }
+    expect(lines.every((l) => !l.includes("\n"))).toBe(true);
+  });
+
+  it("follows changed parameters", () => {
+    const all = text(params({ usableWltpShare: 0.7, middayTopup: true, evaluationYears: 7, excludeRefrigerated: false }));
+    expect(all).toContain("70%");
+    expect(all).toContain("range checked per route");
+    expect(all).toContain("7 years");
+    expect(all).toContain("Refrigerated vans are included");
+    expect(all).not.toContain("60%");
+  });
+
+  it("writes assumptions.md as a bullet list", () => {
+    const md = generateAssumptionsMd(["one", "two"]);
+    expect(md.split("\n").slice(0, 4)).toEqual(["# Assumptions", "", "- one", "- two"]);
   });
 });

@@ -22,6 +22,13 @@ describe("GET /", () => {
     expect(res.text).toContain("Every van is checked against every EV model for range, payload and 5-year saving.");
   });
 
+  it("states what the results page includes", async () => {
+    const res = await request(app).get("/");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("Results include a data quality report, check figures, the shortlist, assumptions and CSV downloads.");
+  });
+
   describe("with a built client", () => {
     let dir: string;
 
