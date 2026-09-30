@@ -1,18 +1,10 @@
-# htn-login
+# Which Vans Go Electric?
 
-A small TypeScript + Express web application. It shows a public home page and has no database and no login.
-
-## Endpoints
-
-| Path | Returns |
-|------|---------|
-| `GET /` | Home page |
-| `GET /health` | `ok` (Render health check) |
-| `GET /version` | `{"commit": "<sha>"}` from Render's `RENDER_GIT_COMMIT`, `null` outside Render |
+A single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles.
 
 ## How the application works
 
-The home page displays a Welcome header followed by a line of text "FUURIAAAgit pull origin mastergit pull origin master" and then a welcome message.
+The application is a single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles. Users upload van register (vans.csv) and trip history (trips.csv), configure analysis parameters (diesel models, EV options, financing, charging infrastructure, range requirements), and the app computes a prioritized shortlist recommending which vans to electrify. The calculation engine implements detailed business rules: trip data cleaning (deduplication, distance repair, ID remapping, daily summation), per-van metrics (P95 percentile daily km, max load, annualized distance), eligibility checks (refrigeration exclusion, range/payload fit, depot constraints), financial analysis (fuel vs. charging costs, EV purchase vs. diesel lease exit, 5-year total cost), and shortlist optimization with grant/charging/re-basing caps. Results include per-van detailed analysis, prioritized shortlist, and exportable summary for finance and operations teams. No network requests; all computation happens client-side.
 
 ## Tech Stack
 

@@ -1,0 +1,39 @@
+van_id,diesel_model,depot,owned_or_leased,lease_end,monthly_lease_pln,refrigerated
+P-01,Brona D35,North,owned,,0,no
+P-02,Kestrel Cargo 3.5,North,leased,2027-02-15,2500,no
+P-03,Brona D35 Long,North,owned,,0,yes
+P-04,Kestrel Cargo 3.5,North,leased,2026-08-20,2400,no
+P-05,Brona D35,North,owned,,0,no
+P-06,Brona D35 Long,North,leased,2026-10-30,2600,no
+P-07,Kestrel Cargo 3.5,North,owned,,0,yes
+P-08,Brona D35,North,leased,2026-03-15,2300,no
+P-09,Kestrel Cargo 3.5,North,owned,,0,no
+P-10,Brona D35 Long,North,leased,2027-01-10,2700,no
+P-11,Brona D35,North,owned,,0,no
+P-12,Kestrel Cargo 3.5,North,leased,2026-09-05,2450,no
+P-13,Brona D35,North,owned,,0,no
+P-14,Brona D35 Long,North,leased,2027-03-20,2650,no
+P-15,Kestrel Cargo 3.5,North,owned,,0,no
+P-16,Brona D35,South,owned,,0,no
+P-17,Brona D35 Long,South,leased,2026-11-15,2550,no
+P-18,Kestrel Cargo 3.5,South,owned,,0,no
+P-19,Brona D35,South,owned,,0,yes
+P-20,Kestrel Cargo 3.5,South,leased,2027-02-28,2480,no
+P-21,Brona D35,South,owned,,0,no
+P-22,Brona D35 Long,South,leased,2026-12-10,2580,no
+P-23,Kestrel Cargo 3.5,South,owned,,0,yes
+P-24,Brona D35,South,leased,2027-01-05,2400,no
+P-25,Brona D35 Long,South,owned,,0,no
+P-26,Kestrel Cargo 3.5,North,owned,,0,no
+P-27,Brona D35,North,leased,2026-10-15,2350,no
+P-28,Brona D35 Long,North,owned,,0,no
+P-29,Kestrel Cargo 3.5,North,leased,2026-09-25,2520,no
+P-30,Brona D35,North,owned,,0,no
+P-31,Brona D35 Long,North,leased,2027-04-10,2720,no
+P-32,Kestrel Cargo 3.5,South,owned,,0,no
+P-33,Brona D35,South,owned,,0,no
+P-34,Brona D35 Long,South,leased,2026-11-30,2600,yes
+P-35,Kestrel Cargo 3.5,South,owned,,0,yes
+P-36,Brona D35,South,leased,2027-02-05,2450,no
+P-37,Brona D35 Long,South,owned,,0,no
+P-38,Kestrel Cargo 3.5,North,leased,2026-08-15,2380,no
