@@ -68,6 +68,15 @@ describe("GET /", () => {
     expect(html).not.toContain("linear-gradient(135deg, #667eea");
   });
 
+  it("uses the green .header class on both the form and the results view", () => {
+    const main = fs.readFileSync(path.join(__dirname, "..", "src", "main.ts"), "utf8");
+
+    expect(main.split('<div class="header">').length - 1).toBeGreaterThanOrEqual(2);
+    expect(main).not.toContain("gradient");
+    expect(main).not.toContain("#667eea");
+    expect(main).not.toContain("#764ba2");
+  });
+
   describe("with a built client", () => {
     let dir: string;
 
