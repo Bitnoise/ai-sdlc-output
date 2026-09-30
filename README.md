@@ -4,13 +4,22 @@ A single-page, browser-only web app for analyzing which delivery vans in a fleet
 
 ## How the application works
 
-The application is a single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles. Users upload van register (`vans.csv`) and trip history (`trips.csv`), configure analysis parameters (diesel models, EV options, financing, charging infrastructure, range requirements), and the app computes a prioritized shortlist recommending which vans to electrify.
+The application is a single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles. Users upload van register (`vans.csv`) and trip history (`trips.csv`), configure analysis parameters, and the app computes a prioritized shortlist recommending which vans to electrify.
 
-**Screen 1 — Parameters Form** pre-fills all fields with documented defaults: diesel models (fuel use, payload), EV models (range, payload, price, lease terms), maintenance costs, electricity tariffs (night/day), grant settings (30% of purchase, max 10 EVs), charging infrastructure (North chargers, South re-basing cap), range rule (95th percentile, 60% usable WLTP, midday top-up optional), financing (5-year horizon, lease exit fee, 12-month window), and exclusions (refrigerated vans). The analyst can edit any parameter, upload cleaned CSV files, and save/load settings as JSON.
+**Screen 1 — Parameters Form** pre-fills all fields with documented defaults from business rules:
+- **Diesel Models** table: Model names, fuel consumption (L/100 km), payload (kg); default diesel price 5.20 PLN/L and maintenance 0.34 PLN/km.
+- **EV Models** table: Model names, WLTP range (km), payload (kg), energy consumption (kWh/100 km), purchase price, monthly lease, lease term (months); defaults Volta Cargo S and L.
+- **Costs & Tariffs**: EV maintenance (0.14 PLN/km), night tariff (0.58 PLN/kWh), day tariff (0.92 PLN/kWh).
+- **Charging Infrastructure**: North charging points (10), South charging points (0), max South vans re-based to North (3).
+- **Range Rule**: 95th percentile, usable WLTP share 60%, midday top-up off by default.
+- **Financing**: 5-year evaluation horizon, grant 30% of purchase (max 10 EVs), lease exit fee 3 months, "lease ends soon" 12-month window, analysis date (today by default).
+- **Exclusions & Data Cleaning**: Toggle to exclude refrigerated vans, export length in weeks (auto-derived, default 13), van ID alias table for remapping (default P-17 → P-17B).
+- **File Uploads**: Validate `vans.csv` and `trips.csv` headers and types; show clear errors for missing columns, unparseable numbers, and unknown van IDs in trips. Run button disabled until both files valid.
+- **Settings**: Save all parameters as JSON; load JSON to restore parameters for next quarter's analysis.
 
-**Screen 2 — Results** displays a data quality report (rows read, duplicates removed, aliases remapped, distances repaired), check figures (vans assessed, trips counted, total km), a per-van table for all vans showing depot/ownership/lease end/P95 day km/max load/eligibility per EV model/best model/status/exclusion reason, a prioritized shortlist with rank/van/EV model/depot/savings, assumptions (human-readable rules), and download buttons for `shortlist.csv`, `summary.csv`, `assumptions.md`, `settings.json`.
+**Screen 2 — Results** (not yet implemented) will display data quality report, check figures, per-van metrics, shortlist, assumptions, and downloads.
 
-The calculation engine implements all business rules: trip data cleaning (deduplication, alias remapping via ID table, odometer repair with GPS fallback), van metrics (P95 percentile daily km from summed multi-route days, max load, annual km annualized from export weeks), eligibility checks (refrigeration exclusion, range fit at 60% WLTP, payload fit, depot constraints with South re-basing to North), financial analysis (diesel fuel vs. night-tariff EV charging, 5-year total cost: savings minus EV purchase net of 30% grant minus diesel lease exit fee), and shortlist optimization enforcing caps (10 grant-eligible, 10 charging points, 3 South rebasing). All CSV output has no thousands separators, dot decimals, proper column order, and quoted text fields containing commas.
+The calculation engine implements all business rules: trip data cleaning (deduplication, alias remapping, odometer repair with GPS fallback), van metrics (P95 percentile daily km from summed multi-route days, max load, annualized km), eligibility checks (refrigeration exclusion, range fit, payload fit, depot constraints), financial analysis (5-year operating saving minus EV net cost minus diesel lease exit fee), and shortlist optimization enforcing caps (10 grant, 10 charging points, 3 South rebasing).
 
 No network requests; all parsing and computation happens client-side, and uploaded data never leaves the browser.
 
