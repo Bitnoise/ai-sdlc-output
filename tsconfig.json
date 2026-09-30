@@ -1,12 +1,16 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "commonjs",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "rootDir": ".",
     "outDir": "dist",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["node", "jest"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "jest"],
+    "resolveJsonModule": true
   },
   "include": ["src", "test"]
 }
