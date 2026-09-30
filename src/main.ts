@@ -1,4 +1,4 @@
-import { analyzeFleet, cleanTrips, formatCsvValue, resolveVanId, usableKm, type AnalysisParams, type DieselModel, type EVModel, type AnalysisResult, type CleaningResult, type Van, generateShortlistCsv, generateSummaryCsv } from './engine';
+import { analyzeFleet, cleanTrips, deriveExportWeeks, formatCsvValue, generateAssumptions, generateAssumptionsMd, resolveVanId, usableKm, type AnalysisParams, type DieselModel, type EVModel, type AnalysisResult, type CleaningResult, type Van, generateShortlistCsv, generateSummaryCsv } from './engine';
 import Papa from 'papaparse';
 
 interface AppState {
@@ -28,6 +28,8 @@ interface AppState {
   tripsFile: File | null;
   analysisResult: AnalysisResult | null;
   cleaningResult: CleaningResult | null;
+  lastParams: AnalysisParams | null;
+  lastSettings: ReturnType<typeof buildSettings> | null;
 }
 
 interface UploadError {
@@ -73,12 +75,80 @@ const DEFAULT_STATE: AppState = {
   tripsFile: null,
   analysisResult: null,
   cleaningResult: null,
+  lastParams: null,
+  lastSettings: null,
 };
 
 const appState: AppState = JSON.parse(JSON.stringify(DEFAULT_STATE));
 let uploadErrors: UploadError[] = [];
 let parsedVans: ParsedRow[] = [];
 let parsedTrips: ParsedRow[] = [];
+let exportWeeksAutoDerived = false;
+let settingsError = '';
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** Engine parameters from the form (percent fields become 0-1 shares). */
+function buildParams(): AnalysisParams {
+  return {
+    dieselModels: appState.dieselModels.map((m) => ({ ...m })),
+    evModels: appState.evModels.map((m) => ({ ...m })),
+    dieselPricePln: appState.dieselPricePln,
+    dieselMaintenancePln: appState.dieselMaintenancePln,
+    evMaintenancePln: appState.evMaintenancePln,
+    nightTariffPln: appState.nightTariffPln,
+    grantShare: appState.grantPercentage / 100,
+    grantCap: appState.grantMaxCount,
+    chargingPointsNorth: appState.chargingPointsNorth,
+    chargingPointsSouth: appState.chargingPointsSouth,
+    southRebaseCap: appState.maxSouthRebase,
+    rangePercentile: appState.rangePercentile,
+    usableWltpShare: appState.usableWltpShare / 100,
+    middayTopup: appState.midDayTopup,
+    evaluationYears: appState.evaluationYears,
+    leaseExitFeeMonths: appState.leaseExitFeeMonths,
+    leaseWindowMonths: appState.leaseWindowMonths,
+    analysisDate: appState.analysisDate,
+    excludeRefrigerated: appState.excludeRefrigerated,
+    exportWeeks: appState.exportWeeks,
+    aliasList: appState.aliasList.map((a) => ({ ...a })),
+  };
+}
+
+/** The settings.json document: every form field, in form units. */
+function buildSettings() {
+  return {
+    dieselModels: appState.dieselModels.map((m) => ({ ...m })),
+    evModels: appState.evModels.map((m) => ({ ...m })),
+    dieselPricePln: appState.dieselPricePln,
+    dieselMaintenancePln: appState.dieselMaintenancePln,
+    evMaintenancePln: appState.evMaintenancePln,
+    nightTariffPln: appState.nightTariffPln,
+    dayTariffPln: appState.dayTariffPln,
+    grantPercentage: appState.grantPercentage,
+    grantMaxCount: appState.grantMaxCount,
+    chargingPointsNorth: appState.chargingPointsNorth,
+    chargingPointsSouth: appState.chargingPointsSouth,
+    maxSouthRebase: appState.maxSouthRebase,
+    rangePercentile: appState.rangePercentile,
+    usableWltpShare: appState.usableWltpShare,
+    midDayTopup: appState.midDayTopup,
+    evaluationYears: appState.evaluationYears,
+    leaseExitFeeMonths: appState.leaseExitFeeMonths,
+    leaseWindowMonths: appState.leaseWindowMonths,
+    analysisDate: appState.analysisDate,
+    excludeRefrigerated: appState.excludeRefrigerated,
+    aliasList: appState.aliasList.map((a) => ({ ...a })),
+    exportWeeks: appState.exportWeeks,
+  };
+}
 
 function parseVansCsv(file: File): Promise<void> {
   return new Promise((resolve) => {
@@ -168,6 +238,11 @@ function parseTripsCsv(file: File): Promise<void> {
           } else {
             parsedTrips = results.data;
             appState.tripsFile = file;
+            const weeks = deriveExportWeeks(results.data);
+            if (weeks > 0) {
+              appState.exportWeeks = weeks;
+              exportWeeksAutoDerived = true;
+            }
           }
         }
         resolve();
@@ -188,7 +263,7 @@ function renderForm(): void {
   const app = document.getElementById('app');
   if (!app) return;
 
-  const errorsHtml = uploadErrors.map(e => `<div class="error-message">${e.file}: ${e.error}</div>`).join('');
+  const errorsHtml = uploadErrors.map(e => `<div class="error-message">${escapeHtml(e.file)}: ${escapeHtml(e.error)}</div>`).join('');
 
   app.innerHTML = `
     <div class="container">
@@ -361,6 +436,7 @@ function renderForm(): void {
             <div class="form-col">
               <label>Export Length (weeks):</label>
               <input type="number" id="exportWeeks" step="1" value="${appState.exportWeeks}" />
+              ${exportWeeksAutoDerived ? '<span class="field-hint">auto-derived from trip dates</span>' : ''}
             </div>
           </div>
           <div class="subsection">
@@ -405,6 +481,7 @@ function renderForm(): void {
 
         <!-- Action Buttons -->
         <section class="form-section">
+          ${settingsError ? `<div class="errors"><div class="error-message">${escapeHtml(settingsError)}</div></div>` : ''}
           <div class="button-group">
             <button type="button" class="btn-secondary" id="saveSettingsBtn">Save Settings</button>
             <button type="button" class="btn-secondary" id="loadSettingsBtn">Load Settings</button>
@@ -486,6 +563,7 @@ function attachEventListeners(): void {
   });
   document.getElementById('exportWeeks')?.addEventListener('change', (e) => {
     appState.exportWeeks = parseInt((e.target as HTMLInputElement).value, 10);
+    exportWeeksAutoDerived = false;
   });
 
   // Diesel models table
@@ -646,37 +724,7 @@ function attachEventListeners(): void {
   // Settings
   document.getElementById('saveSettingsBtn')?.addEventListener('click', (e) => {
     e.preventDefault();
-    const settingsData = {
-      dieselModels: appState.dieselModels,
-      evModels: appState.evModels,
-      dieselPricePln: appState.dieselPricePln,
-      dieselMaintenancePln: appState.dieselMaintenancePln,
-      evMaintenancePln: appState.evMaintenancePln,
-      nightTariffPln: appState.nightTariffPln,
-      dayTariffPln: appState.dayTariffPln,
-      grantPercentage: appState.grantPercentage,
-      grantMaxCount: appState.grantMaxCount,
-      chargingPointsNorth: appState.chargingPointsNorth,
-      chargingPointsSouth: appState.chargingPointsSouth,
-      maxSouthRebase: appState.maxSouthRebase,
-      rangePercentile: appState.rangePercentile,
-      usableWltpShare: appState.usableWltpShare,
-      midDayTopup: appState.midDayTopup,
-      evaluationYears: appState.evaluationYears,
-      leaseExitFeeMonths: appState.leaseExitFeeMonths,
-      leaseWindowMonths: appState.leaseWindowMonths,
-      analysisDate: appState.analysisDate,
-      excludeRefrigerated: appState.excludeRefrigerated,
-      aliasList: appState.aliasList,
-      exportWeeks: appState.exportWeeks,
-    };
-    const blob = new Blob([JSON.stringify(settingsData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'settings.json';
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadFile(JSON.stringify(buildSettings(), null, 2), 'settings.json', 'application/json;charset=utf-8');
   });
 
   document.getElementById('loadSettingsBtn')?.addEventListener('click', (e) => {
@@ -688,7 +736,17 @@ function attachEventListeners(): void {
       const file = (event.target as HTMLInputElement).files?.[0];
       if (file) {
         const text = await file.text();
-        const data = JSON.parse(text);
+        let data;
+        try {
+          data = JSON.parse(text);
+          if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new Error('not a settings object');
+        } catch (err) {
+          settingsError = `Could not load ${file.name}: ${err instanceof Error ? err.message : String(err)}`;
+          renderForm();
+          return;
+        }
+        settingsError = '';
+        exportWeeksAutoDerived = false;
         appState.dieselModels = data.dieselModels || DEFAULT_STATE.dieselModels;
         appState.evModels = data.evModels || DEFAULT_STATE.evModels;
         appState.dieselPricePln = data.dieselPricePln ?? DEFAULT_STATE.dieselPricePln;
@@ -746,58 +804,13 @@ async function runAnalysis(): Promise<void> {
   const cleaningResult = cleanTrips(parsedTrips as Array<Record<string, unknown>>, vanIds, aliasMap);
   appState.cleaningResult = cleaningResult;
 
-  const params: AnalysisParams = {
-    dieselModels: appState.dieselModels,
-    evModels: appState.evModels,
-    dieselPricePln: appState.dieselPricePln,
-    dieselMaintenancePln: appState.dieselMaintenancePln,
-    evMaintenancePln: appState.evMaintenancePln,
-    nightTariffPln: appState.nightTariffPln,
-    grantShare: appState.grantPercentage / 100,
-    grantCap: appState.grantMaxCount,
-    chargingPointsNorth: appState.chargingPointsNorth,
-    chargingPointsSouth: appState.chargingPointsSouth,
-    southRebaseCap: appState.maxSouthRebase,
-    rangePercentile: appState.rangePercentile,
-    usableWltpShare: appState.usableWltpShare / 100,
-    middayTopup: appState.midDayTopup,
-    evaluationYears: appState.evaluationYears,
-    leaseExitFeeMonths: appState.leaseExitFeeMonths,
-    leaseWindowMonths: appState.leaseWindowMonths,
-    analysisDate: appState.analysisDate,
-    excludeRefrigerated: appState.excludeRefrigerated,
-    exportWeeks: appState.exportWeeks,
-  };
-
+  // Downloads reflect the parameters of this run, not later form edits.
+  const params = buildParams();
+  appState.lastParams = params;
+  appState.lastSettings = buildSettings();
   appState.analysisResult = analyzeFleet(vans, cleaningResult, params);
 
   renderResults();
-}
-
-function generateAssumptionsMd(): string {
-  const lines: string[] = [];
-  lines.push('# Analysis Assumptions');
-  lines.push('');
-  lines.push(`- Analysis date: ${appState.analysisDate}`);
-  lines.push(`- Evaluation horizon: ${appState.evaluationYears} years`);
-  lines.push(`- Diesel price: ${appState.dieselPricePln} PLN/L`);
-  lines.push(`- Diesel maintenance: ${appState.dieselMaintenancePln} PLN/km`);
-  lines.push(`- EV maintenance: ${appState.evMaintenancePln} PLN/km`);
-  lines.push(`- Electricity night tariff: ${appState.nightTariffPln} PLN/kWh`);
-  lines.push(`- Electricity day tariff: ${appState.dayTariffPln} PLN/kWh`);
-  lines.push(`- Grant: ${appState.grantPercentage}% of purchase price, max ${appState.grantMaxCount} vans (purchase only, not leased)`);
-  lines.push(`- Charging: North depot ${appState.chargingPointsNorth} points, South depot ${appState.chargingPointsSouth} points, overnight charging only`);
-  lines.push(`- Max South vans re-based to North: ${appState.maxSouthRebase}`);
-  lines.push(`- Range rule: ${appState.rangePercentile}th percentile of daily km, usable share ${appState.usableWltpShare}% of WLTP range`);
-  lines.push(`- Midday top-up: ${appState.midDayTopup ? 'allowed' : 'not allowed'}`);
-  lines.push(`- Lease exit fee: ${appState.leaseExitFeeMonths}× monthly lease payment for vans with lease ending >12 months from analysis date`);
-  lines.push(`- Lease ends soon window: ${appState.leaseWindowMonths} months from analysis date`);
-  lines.push(`- Exclude refrigerated vans: ${appState.excludeRefrigerated ? 'yes' : 'no'}`);
-  lines.push(`- Export weeks: ${appState.exportWeeks}`);
-  lines.push('- Odometer preferred over GPS; GPS only as fallback');
-  lines.push('- Double-route days summed (no midday recharge between routes)');
-  lines.push('- Annualization from summer export, no seasonal uplift beyond data');
-  return lines.join('\n');
 }
 
 function downloadFile(content: string, filename: string, mimeType: string = 'text/plain'): void {
@@ -812,10 +825,21 @@ function downloadFile(content: string, filename: string, mimeType: string = 'tex
 
 function renderResults(): void {
   const app = document.getElementById('app');
-  if (!app || !appState.analysisResult || !appState.cleaningResult) return;
+  if (!app || !appState.analysisResult || !appState.cleaningResult || !appState.lastParams) return;
 
   const result = appState.analysisResult;
   const cleaning = appState.cleaningResult;
+  const params = appState.lastParams;
+  const settings = appState.lastSettings;
+  const assumptions = generateAssumptions(params);
+
+  const aliasPairs = params.aliasList.filter((a) => a.from.trim() && a.to.trim());
+  const repairsList = cleaning.repairs.length > 0
+    ? `<ul class="quality-list">${cleaning.repairs.map((r) => `<li>line ${r.line}, ${escapeHtml(r.vanId)}, ${escapeHtml(r.date)}: odometer "${escapeHtml(r.odometerRaw)}" → GPS ${r.gpsKm} km</li>`).join('')}</ul>`
+    : '';
+  const droppedList = cleaning.dropped.length > 0
+    ? `<ul class="quality-list">${cleaning.dropped.map((d) => `<li>line ${d.line}, ${escapeHtml(d.vanId || '—')}, ${escapeHtml(d.date || '—')}: ${escapeHtml(d.reason)}</li>`).join('')}</ul>`
+    : '';
 
   // Build per-van table rows (all vans)
   const yesNo = (ok: boolean): string => (ok ? 'Yes' : 'No');
@@ -827,19 +851,19 @@ function renderResults(): void {
 
     return `
       <tr>
-        <td>${van.vanId}</td>
+        <td>${escapeHtml(van.vanId)}</td>
         <td>${van.depot}</td>
         <td>${van.refrigerated ? 'Yes' : 'No'}</td>
         <td>${van.ownedOrLeased}</td>
-        <td>${van.leaseEndDate || '—'}</td>
+        <td>${escapeHtml(van.leaseEndDate || '—')}</td>
         <td>${metrics.p95DayKm.toFixed(1)}</td>
         <td>${metrics.maxDayKm.toFixed(1)}</td>
         <td>${metrics.maxLoadKg}</td>
         <td>${metrics.annualKm}</td>
         ${e.models.map(m => `<td>${yesNo(m.rangeOk)}</td><td>${yesNo(m.payloadOk)}</td><td>${m.savingPln ?? '—'}</td>`).join('')}
-        <td>${e.bestModel?.evModel ?? '—'}</td>
+        <td>${escapeHtml(e.bestModel?.evModel ?? '—')}</td>
         <td>${statusBadge}</td>
-        <td>${e.exclusionReason ?? ''}</td>
+        <td>${escapeHtml(e.exclusionReason ?? '')}</td>
       </tr>
     `;
   }).join('');
@@ -848,19 +872,20 @@ function renderResults(): void {
   const shortlistRows = result.shortlist.map(entry => `
     <tr>
       <td>${entry.rank}</td>
-      <td>${entry.vanId}</td>
-      <td>${entry.evModel}</td>
+      <td>${escapeHtml(entry.vanId)}</td>
+      <td>${escapeHtml(entry.evModel)}</td>
       <td>${entry.evDepot}</td>
       <td>${entry.rangeCheckKm.toFixed(1)}</td>
       <td>${entry.annualKm}</td>
       <td>${entry.annualFuelSavingPln}</td>
       <td>${entry.savingPln}</td>
-      <td>${entry.reason}</td>
+      <td>${escapeHtml(entry.reason)}</td>
     </tr>
   `).join('');
+  const shortlistBody = shortlistRows || '<tr><td colspan="9">No van qualifies</td></tr>';
 
-  const evModelHeaders = appState.evModels
-    .map(m => `<th>${m.name} range OK</th><th>${m.name} payload OK</th><th>${m.name} 5-yr saving (PLN)</th>`)
+  const evModelHeaders = params.evModels
+    .map(m => `<th>${escapeHtml(m.name)} range OK</th><th>${escapeHtml(m.name)} payload OK</th><th>${escapeHtml(m.name)} ${params.evaluationYears}-yr saving (PLN)</th>`)
     .join('');
   const rangeBasisNote = result.rangeBasis === 'route'
     ? '<p class="range-basis-note">Midday top-up on: range checked per route, not per day</p>'
@@ -880,10 +905,12 @@ function renderResults(): void {
           <div class="quality-report">
             <div class="quality-item"><strong>Rows read:</strong> ${cleaning.rowsRead}</div>
             <div class="quality-item"><strong>Exact duplicates removed:</strong> ${cleaning.exactDuplicatesRemoved}</div>
-            <div class="quality-item"><strong>IDs remapped by alias:</strong> ${cleaning.aliasRemaps}</div>
-            <div class="quality-item"><strong>Distances repaired:</strong> ${cleaning.odometerRepairs} (GPS used instead of odometer)</div>
-            <div class="quality-item"><strong>Invalid rows removed:</strong> ${cleaning.invalidRowsRemoved}</div>
-            <div class="quality-item"><strong>Unknown van IDs found:</strong> ${cleaning.unknownVanIds.length > 0 ? cleaning.unknownVanIds.join(', ') : 'none'}</div>
+            <div class="quality-item"><strong>IDs remapped by alias:</strong> ${cleaning.aliasRemaps} (${aliasPairs.length > 0 ? aliasPairs.map((a) => `${escapeHtml(a.from)} → ${escapeHtml(a.to)}`).join(', ') : 'no aliases'})</div>
+            <div class="quality-item"><strong>Distances repaired:</strong> ${cleaning.odometerRepairs} (GPS used instead of odometer)${repairsList}</div>
+            <div class="quality-item"><strong>Blank gps_km (rows kept):</strong> ${cleaning.blankGps}</div>
+            <div class="quality-item"><strong>Rows dropped:</strong> ${cleaning.invalidRowsRemoved}${droppedList}</div>
+            <div class="quality-item"><strong>Unknown van IDs found:</strong> ${cleaning.unknownVanIds.length > 0 ? cleaning.unknownVanIds.map(escapeHtml).join(', ') : 'none'}</div>
+            <div class="quality-item"><strong>Export length:</strong> ${params.exportWeeks} weeks</div>
           </div>
         </section>
 
@@ -901,7 +928,7 @@ function renderResults(): void {
             </div>
             <div class="check-item">
               <span class="check-label">Total km:</span>
-              <span class="check-value">${result.checkFigures.totalKm.toLocaleString('en-US')}</span>
+              <span class="check-value">${result.checkFigures.totalKm}</span>
             </div>
           </div>
         </section>
@@ -947,16 +974,24 @@ function renderResults(): void {
                   <th>Van ID</th>
                   <th>EV Model</th>
                   <th>EV Depot</th>
-                  <th>P95 Day km</th>
+                  <th>Range check km</th>
                   <th>Annual km</th>
-                  <th>Annual Fuel Saving</th>
-                  <th>5-Year Saving</th>
+                  <th>Annual Fuel Saving (PLN)</th>
+                  <th>${params.evaluationYears}-Year Saving (PLN)</th>
                   <th>Reason</th>
                 </tr>
               </thead>
               <tbody>
-                ${shortlistRows}
+                ${shortlistBody}
               </tbody>
+              <tfoot>
+                <tr class="totals-row">
+                  <td colspan="6">Total: ${result.summary.recommendedCount} vans</td>
+                  <td>${result.summary.annualFuelSavingPln}</td>
+                  <td>${result.summary.savingPln}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         </section>
@@ -965,7 +1000,7 @@ function renderResults(): void {
         <section class="results-section">
           <h2>Analysis Assumptions</h2>
           <div class="assumptions-box">
-            ${generateAssumptionsMd().split('\n').slice(2).map(line => line.trim() ? `<div class="assumption-item">${line}</div>` : '').join('')}
+            ${assumptions.map((line) => `<div class="assumption-item">${escapeHtml(line)}</div>`).join('')}
           </div>
         </section>
 
@@ -996,52 +1031,19 @@ function renderResults(): void {
   });
 
   document.getElementById('downloadSummary')?.addEventListener('click', () => {
-    const csv = generateSummaryCsv(
-      result.checkFigures.vansAssessed,
-      result.checkFigures.tripsCounted,
-      result.checkFigures.totalKm,
-      result.summary.recommendedCount,
-      result.summary.annualFuelSavingPln,
-      result.summary.savingPln
-    );
-    downloadFile(csv, 'summary.csv', 'text/csv;charset=utf-8');
+    downloadFile(generateSummaryCsv(result, params), 'summary.csv', 'text/csv;charset=utf-8');
   });
 
   document.getElementById('downloadAssumptions')?.addEventListener('click', () => {
-    const md = generateAssumptionsMd();
-    downloadFile(md, 'assumptions.md', 'text/markdown;charset=utf-8');
+    downloadFile(generateAssumptionsMd(assumptions), 'assumptions.md', 'text/markdown;charset=utf-8');
   });
 
   document.getElementById('downloadSettings')?.addEventListener('click', () => {
-    const settingsData = {
-      dieselModels: appState.dieselModels,
-      evModels: appState.evModels,
-      dieselPricePln: appState.dieselPricePln,
-      dieselMaintenancePln: appState.dieselMaintenancePln,
-      evMaintenancePln: appState.evMaintenancePln,
-      nightTariffPln: appState.nightTariffPln,
-      dayTariffPln: appState.dayTariffPln,
-      grantPercentage: appState.grantPercentage,
-      grantMaxCount: appState.grantMaxCount,
-      chargingPointsNorth: appState.chargingPointsNorth,
-      chargingPointsSouth: appState.chargingPointsSouth,
-      maxSouthRebase: appState.maxSouthRebase,
-      rangePercentile: appState.rangePercentile,
-      usableWltpShare: appState.usableWltpShare,
-      midDayTopup: appState.midDayTopup,
-      evaluationYears: appState.evaluationYears,
-      leaseExitFeeMonths: appState.leaseExitFeeMonths,
-      leaseWindowMonths: appState.leaseWindowMonths,
-      analysisDate: appState.analysisDate,
-      excludeRefrigerated: appState.excludeRefrigerated,
-      aliasList: appState.aliasList,
-      exportWeeks: appState.exportWeeks,
-    };
-    downloadFile(JSON.stringify(settingsData, null, 2), 'settings.json', 'application/json;charset=utf-8');
+    downloadFile(JSON.stringify(settings ?? buildSettings(), null, 2), 'settings.json', 'application/json;charset=utf-8');
   });
 
   document.getElementById('downloadPerVan')?.addEventListener('click', () => {
-    const modelHeaders = appState.evModels.flatMap(m => [`${m.name} range_ok`, `${m.name} payload_ok`, `${m.name} saving_pln`]);
+    const modelHeaders = params.evModels.flatMap(m => [`${m.name} range_ok`, `${m.name} payload_ok`, `${m.name} saving_pln`]);
     const header = ['van_id', 'depot', 'refrigerated', 'owned_or_leased', 'lease_end', 'p95_day_km', 'max_day_km', 'max_load_kg', 'annual_km', ...modelHeaders, 'best_ev_model', 'status', 'rank', 'exclusion_code', 'reason'];
     const lines = [header.map(formatCsvValue).join(',')];
     for (const e of result.evaluations) {
