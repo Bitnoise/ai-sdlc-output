@@ -4,7 +4,19 @@ A single-page, browser-only web app for analyzing which delivery vans in a fleet
 
 ## How the application works
 
-The application is a single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles. Users upload van register (`vans.csv`) and trip history (`trips.csv`), configure analysis parameters, and the app computes a prioritized shortlist recommending which vans to electrify.
+The application is a single-page, browser-only web app for analyzing which delivery vans in a fleet should be replaced with electric vehicles.
+
+**User Workflow:**
+1. User opens the app and sees Screen 1 — a parameters form with all fields pre-filled with documented defaults
+2. User uploads van register (`vans.csv`) and trip history (`trips.csv`); the app validates CSV headers and shows clear errors if columns are missing or data is unparseable
+3. Run button is enabled only when both files are valid and uploaded
+4. User clicks Run, which:
+   - Parses CSVs with PapaParse (header: true, skipEmptyLines: true)
+   - Applies van ID alias table to remap trip van_ids before validation (e.g., P-17 → P-17B)
+   - Cleans trip data: deduplicates exact row matches, repairs distances (uses odometer_km if valid, falls back to gps_km, drops row if both invalid)
+   - Calls the calculation engine (analyzeFleet) with all parameters from the form
+   - Navigates to Screen 2 with results
+5. User can modify parameters and re-run analysis, or download results and assumptions
 
 **Screen 1 — Parameters Form** pre-fills all fields with documented defaults from business rules:
 - **Diesel Models** table: Model names, fuel consumption (L/100 km), payload (kg); default diesel price 5.20 PLN/L and maintenance 0.34 PLN/km.
@@ -20,15 +32,16 @@ The application is a single-page, browser-only web app for analyzing which deliv
 **Screen 2 — Results** displays the analysis output:
 - **Data Quality Report**: Shows rows read, exact duplicates removed, IDs remapped by alias, distances repaired (odometer → GPS fallbacks), invalid rows removed, and unknown van IDs encountered.
 - **Check Figures**: Vans assessed, trips counted (after deduplication and cleaning), total kilometers traveled.
-- **Per-Van Analysis Table**: All 38 vans with metrics (depot, refrigerated flag, owned/leased, lease end date, P95 daily km, max single day, max load carried, annualized km), EV model eligibility (Yes/No for each model), best EV model, and status (shortlisted with rank / excluded with reason).
+- **Per-Van Analysis Table**: All vans with metrics (depot, refrigerated flag, owned/leased, lease end date, P95 daily km, max single day, max load carried, annualized km), EV model eligibility (Yes/No for each model), best EV model, and status (shortlisted with rank / excluded with reason).
 - **Shortlist Table**: Ranked recommendations (1 to N) showing van ID, EV model, EV depot (North or South after any re-basing), P95 daily km, annual km, annual fuel saving in PLN, 5-year total saving in PLN, and one-line reason (e.g., "Owned North van, P95 145 km fits 60% of Volta Cargo S range, saves 21,710 PLN").
 - **Assumptions List**: Human-readable summary of all parameters and business rules applied to the analysis (diesel price, EV models, maintenance costs, electricity tariffs, grant cap, charging infrastructure, range rule, financing horizon, lease exit fees, exclusions, analysis date, annualization method, odometer preference).
 - **Downloads**: Buttons to download `shortlist.csv` (CSV with correct formatting: UTF-8, comma delimiter, dot decimals, no thousands separators), `summary.csv` (figure/value pairs), `assumptions.md`, `settings.json` (parameters for next quarter), and optional `per-van.csv` (all vans with metrics).
 - **Back to Parameters**: Button to return to Screen 1, preserving parameters and allowing re-runs with different data or settings.
 
-The calculation engine implements all business rules: trip data cleaning (deduplication, alias remapping, odometer repair with GPS fallback), van metrics (P95 percentile daily km from summed multi-route days, max load, annualized km), eligibility checks (refrigeration exclusion, range fit, payload fit, depot constraints), financial analysis (5-year operating saving minus EV net cost minus diesel lease exit fee), and shortlist optimization enforcing caps (10 grant, 10 charging points, 3 South rebasing).
+**Calculation Engine** (all client-side, no backend calls):
+The engine implements all business rules in pure TypeScript: trip data cleaning (deduplication, alias remapping, odometer repair with GPS fallback), van metrics (P95 percentile daily km from summed multi-route days, max load, annualized km), eligibility checks (refrigeration exclusion, range fit, payload fit, depot constraints), financial analysis (5-year operating saving minus EV net cost minus diesel lease exit fee), and shortlist optimization enforcing caps (10 grant, 10 charging points, 3 South rebasing).
 
-No network requests; all parsing and computation happens client-side, and uploaded data never leaves the browser.
+**Data Privacy**: No network requests; all parsing and computation happens client-side, and uploaded data never leaves the browser.
 
 ## Tech Stack
 
