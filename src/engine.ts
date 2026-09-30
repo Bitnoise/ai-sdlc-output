@@ -31,13 +31,85 @@ export interface EVModel {
   leaseMonths: number;
 }
 
+export interface AnalysisParams {
+  dieselModels: DieselModel[];
+  evModels: EVModel[];
+  dieselPricePln: number;
+  dieselMaintenancePln: number;
+  evMaintenancePln: number;
+  nightTariffPln: number;
+  grantShare: number; // 0-1
+  grantCap: number;
+  chargingPointsNorth: number;
+  chargingPointsSouth: number;
+  southRebaseCap: number;
+  rangePercentile: number;
+  usableWltpShare: number; // 0-1
+  middayTopup: boolean;
+  evaluationYears: number;
+  leaseExitFeeMonths: number;
+  leaseWindowMonths: number;
+  analysisDate: string; // YYYY-MM-DD
+  excludeRefrigerated: boolean;
+  exportWeeks: number;
+}
+
+export const DEFAULT_PARAMS: AnalysisParams = {
+  dieselModels: [
+    { name: "Brona D35", fuelUseLper100km: 9.6, payloadKg: 1150 },
+    { name: "Brona D35 Long", fuelUseLper100km: 10.9, payloadKg: 1050 },
+    { name: "Kestrel Cargo 3.5", fuelUseLper100km: 11.8, payloadKg: 1300 },
+  ],
+  evModels: [
+    { name: "Volta Cargo S", wltpRangeKm: 260, payloadKg: 1050, energyKwhPer100km: 24, purchasePricePln: 150000, monthlyLeasePln: 2900, leaseMonths: 60 },
+    { name: "Volta Cargo L", wltpRangeKm: 380, payloadKg: 880, energyKwhPer100km: 27, purchasePricePln: 195000, monthlyLeasePln: 3770, leaseMonths: 60 },
+  ],
+  dieselPricePln: 5.2,
+  dieselMaintenancePln: 0.34,
+  evMaintenancePln: 0.14,
+  nightTariffPln: 0.58,
+  grantShare: 0.3,
+  grantCap: 10,
+  chargingPointsNorth: 10,
+  chargingPointsSouth: 0,
+  southRebaseCap: 3,
+  rangePercentile: 95,
+  usableWltpShare: 0.6,
+  middayTopup: false,
+  evaluationYears: 5,
+  leaseExitFeeMonths: 3,
+  leaseWindowMonths: 12,
+  analysisDate: new Date().toISOString().slice(0, 10),
+  excludeRefrigerated: true,
+  exportWeeks: 13,
+};
+
+export interface DistanceRepair {
+  line: number;
+  vanId: string;
+  date: string;
+  odometerRaw: string;
+  gpsKm: number;
+}
+
+export interface DroppedRow {
+  line: number;
+  vanId: string;
+  date: string;
+  reason: string;
+}
+
 export interface CleaningResult {
   trips: Trip[];
   rowsRead: number;
   exactDuplicatesRemoved: number;
+  aliasRemaps: number;
   odometerRepairs: number;
+  blankGps: number;
   invalidRowsRemoved: number;
   unknownVanIds: string[];
+  repairs: DistanceRepair[];
+  dropped: DroppedRow[];
 }
 
 export interface VanMetrics {
@@ -46,31 +118,53 @@ export interface VanMetrics {
   refrigerated: boolean;
   ownedOrLeased: "owned" | "leased";
   leaseEndDate?: string;
+  tripCount: number;
+  dayCount: number;
+  totalKm: number;
   p95DayKm: number;
   maxDayKm: number;
+  p95RouteKm: number;
+  maxRouteKm: number;
   maxLoadKg: number;
   annualKm: number;
 }
 
-export interface EligibilityResult {
-  vanId: string;
+export interface ModelEvaluation {
   evModel: string;
-  eligible: boolean;
-  reason?: string;
-  rangeFit?: boolean;
-  payloadFit?: boolean;
-}
-
-export interface FinancialMetrics {
-  vanId: string;
-  evModel: string;
-  dieselFuelCostPerKm: number;
-  evChargingCostPerKm: number;
-  annualFuelSavingPln: number;
-  annualOperatingSavingPln: number;
+  rangeCheckKm: number;
+  usableRangeKm: number;
+  rangeOk: boolean;
+  payloadOk: boolean;
+  // Money fields are null when the van's diesel model is not in the diesel models table.
+  annualFuelSavingPln: number | null;
+  annualOperatingSavingPln: number | null;
   evNetCostPln: number;
   leaseExitFeePln: number;
-  savingPln: number;
+  savingPln: number | null;
+  eligible: boolean;
+}
+
+export type ExclusionCode =
+  | "refrigerated"
+  | "range"
+  | "payload"
+  | "negative_saving"
+  | "charger_cap"
+  | "south_cap"
+  | "grant_cap"
+  | "unknown_diesel_model"
+  | "no_trips";
+
+export interface VanEvaluation {
+  van: Van;
+  metrics: VanMetrics;
+  models: ModelEvaluation[];
+  bestModel: ModelEvaluation | null;
+  evDepot: "North" | "South";
+  status: "shortlisted" | "excluded";
+  rank?: number;
+  exclusionCode?: ExclusionCode;
+  exclusionReason?: string;
 }
 
 export interface ShortlistEntry {
@@ -89,6 +183,8 @@ export interface AnalysisResult {
   cleaningResult: CleaningResult;
   vans: Van[];
   vanMetrics: Map<string, VanMetrics>;
+  evaluations: VanEvaluation[];
+  rangeBasis: "day" | "route";
   checkFigures: {
     vansAssessed: number;
     tripsCounted: number;
@@ -102,85 +198,119 @@ export interface AnalysisResult {
   };
 }
 
+/** A distance is usable when it is a finite number above zero. */
+export function usableKm(raw: unknown): number | null {
+  const text = raw === null || raw === undefined ? "" : String(raw).trim();
+  if (text === "") return null;
+  const value = Number(text);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** Alias targets apply only when the target is in the register; otherwise the original ID is kept. */
+export function resolveVanId(vanId: string, aliasMap: Map<string, string>, vanIds: Set<string>): string {
+  const target = aliasMap.get(vanId);
+  return target && vanIds.has(target) ? target : vanId;
+}
+
 export function cleanTrips(
   rawTrips: Array<Record<string, unknown>>,
   vanIds: Set<string>,
   aliasMap: Map<string, string>
 ): CleaningResult {
-  const rowsRead = rawTrips.length;
   const seen = new Set<string>();
   let exactDuplicatesRemoved = 0;
-  let odometerRepairs = 0;
-  let invalidRowsRemoved = 0;
+  let aliasRemaps = 0;
+  let blankGps = 0;
   const unknownVanIds = new Set<string>();
+  const repairs: DistanceRepair[] = [];
+  const dropped: DroppedRow[] = [];
   const cleanedTrips: Trip[] = [];
 
-  for (const row of rawTrips) {
-    // Create a signature for duplicate detection
-    const signature = JSON.stringify(row);
+  rawTrips.forEach((row, index) => {
+    const line = index + 2; // header is line 1
+    const signature = Object.keys(row)
+      .map((key) => String(row[key] ?? "").trim())
+      .join("\u0001");
     if (seen.has(signature)) {
       exactDuplicatesRemoved++;
-      continue;
+      return;
     }
     seen.add(signature);
 
-    // Remap van ID via alias
-    const vanId = row.van_id?.toString().trim();
-    if (!vanId) {
-      invalidRowsRemoved++;
-      continue;
+    const rawId = String(row.van_id ?? "").trim();
+    const date = String(row.date ?? "").trim();
+    if (!rawId || !date) {
+      dropped.push({ line, vanId: rawId, date, reason: "missing van_id or date" });
+      return;
     }
 
-    const remappedId = aliasMap.get(vanId) || vanId;
-    if (!vanIds.has(remappedId)) {
-      unknownVanIds.add(vanId);
-      invalidRowsRemoved++;
-      continue;
+    const vanId = resolveVanId(rawId, aliasMap, vanIds);
+    if (vanId !== rawId) aliasRemaps++;
+    if (!vanIds.has(vanId)) {
+      unknownVanIds.add(rawId);
+      dropped.push({ line, vanId: rawId, date, reason: "van_id not in the register" });
+      return;
     }
 
-    // Determine distance: prefer odometer_km, fallback to gps_km
-    const odometerKm = parseFloat(String(row.odometer_km));
-    const gpsKm = parseFloat(String(row.gps_km));
+    const gpsRaw = String(row.gps_km ?? "").trim();
+    if (gpsRaw === "") blankGps++;
 
+    // Odometer is authoritative; GPS is only a fallback.
+    const odometerKm = usableKm(row.odometer_km);
+    const gpsKm = usableKm(gpsRaw);
     let distanceKm: number;
-    if (!isNaN(odometerKm) && odometerKm > 0) {
+    if (odometerKm !== null) {
       distanceKm = odometerKm;
-    } else if (!isNaN(gpsKm) && gpsKm > 0) {
+    } else if (gpsKm !== null) {
       distanceKm = gpsKm;
-      odometerRepairs++;
+      repairs.push({ line, vanId, date, odometerRaw: String(row.odometer_km ?? "").trim(), gpsKm });
     } else {
-      invalidRowsRemoved++;
-      continue;
+      dropped.push({ line, vanId, date, reason: "both odometer_km and gps_km unusable" });
+      return;
     }
-
-    const maxLoadKg = parseFloat(String(row.max_load_kg)) || 0;
 
     cleanedTrips.push({
-      date: String(row.date).trim(),
-      vanId: remappedId,
+      date,
+      vanId,
       distanceKm,
-      maxLoadKg,
+      maxLoadKg: parseFloat(String(row.max_load_kg)) || 0,
     });
-  }
+  });
 
   return {
     trips: cleanedTrips,
-    rowsRead,
+    rowsRead: rawTrips.length,
     exactDuplicatesRemoved,
-    odometerRepairs,
-    invalidRowsRemoved,
+    aliasRemaps,
+    odometerRepairs: repairs.length,
+    blankGps,
+    invalidRowsRemoved: dropped.length,
     unknownVanIds: Array.from(unknownVanIds),
+    repairs,
+    dropped,
   };
 }
+
+/** Percentile with linear interpolation (Excel PERCENTILE.INC / numpy default). */
+export function percentile(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (p / 100) * (sorted.length - 1);
+  const lower = Math.floor(pos);
+  const upper = Math.ceil(pos);
+  return sorted[lower] + (pos - lower) * (sorted[upper] - sorted[lower]);
+}
+
+const round1 = (value: number): number => Math.round(value * 10) / 10;
 
 export function calculateVanMetrics(
   vans: Van[],
   cleanedTrips: Trip[],
-  exportWeeks: number
+  exportWeeks: number,
+  rangePercentile = 95
 ): Map<string, VanMetrics> {
   const metrics = new Map<string, VanMetrics>();
 
-  // Group trips by van
   const tripsByVan = new Map<string, Trip[]>();
   for (const trip of cleanedTrips) {
     if (!tripsByVan.has(trip.vanId)) {
@@ -192,37 +322,18 @@ export function calculateVanMetrics(
   for (const van of vans) {
     const trips = tripsByVan.get(van.vanId) || [];
 
-    if (trips.length === 0) {
-      metrics.set(van.vanId, {
-        vanId: van.vanId,
-        depot: van.depot,
-        refrigerated: van.refrigerated,
-        ownedOrLeased: van.ownedOrLeased,
-        leaseEndDate: van.leaseEndDate,
-        p95DayKm: 0,
-        maxDayKm: 0,
-        maxLoadKg: 0,
-        annualKm: 0,
-      });
-      continue;
-    }
-
-    // Sum trips by date to get daily distances
+    // A day is the sum of all routes the van drove on that date.
     const dailyDistances = new Map<string, number>();
     let totalKm = 0;
     let maxLoadKg = 0;
-
     for (const trip of trips) {
-      const current = dailyDistances.get(trip.date) || 0;
-      dailyDistances.set(trip.date, current + trip.distanceKm);
+      dailyDistances.set(trip.date, (dailyDistances.get(trip.date) || 0) + trip.distanceKm);
       totalKm += trip.distanceKm;
       maxLoadKg = Math.max(maxLoadKg, trip.maxLoadKg);
     }
 
-    const dailyValues = Array.from(dailyDistances.values()).sort((a, b) => a - b);
-    const p95DayKm = percentile(dailyValues, 95);
-    const maxDayKm = dailyValues.length > 0 ? dailyValues[dailyValues.length - 1] : 0;
-    const annualKm = Math.round((totalKm / exportWeeks) * 52);
+    const dayValues = Array.from(dailyDistances.values());
+    const routeValues = trips.map((t) => t.distanceKm);
 
     metrics.set(van.vanId, {
       vanId: van.vanId,
@@ -230,317 +341,219 @@ export function calculateVanMetrics(
       refrigerated: van.refrigerated,
       ownedOrLeased: van.ownedOrLeased,
       leaseEndDate: van.leaseEndDate,
-      p95DayKm: Math.round(p95DayKm * 10) / 10,
-      maxDayKm,
+      tripCount: trips.length,
+      dayCount: dayValues.length,
+      totalKm,
+      p95DayKm: round1(percentile(dayValues, rangePercentile)),
+      maxDayKm: round1(dayValues.length > 0 ? Math.max(...dayValues) : 0),
+      p95RouteKm: round1(percentile(routeValues, rangePercentile)),
+      maxRouteKm: round1(routeValues.length > 0 ? Math.max(...routeValues) : 0),
       maxLoadKg,
-      annualKm,
+      annualKm: exportWeeks > 0 ? Math.round((totalKm / exportWeeks) * 52) : 0,
     });
   }
 
   return metrics;
 }
 
-function percentile(sorted: number[], p: number): number {
-  if (sorted.length === 0) return 0;
-  if (sorted.length === 1) return sorted[0];
-
-  const h = ((p / 100) * (sorted.length - 1)) + 1;
-  const hFloor = Math.floor(h);
-  const hCeil = Math.ceil(h);
-
-  if (hFloor === hCeil) {
-    return sorted[hFloor - 1];
-  }
-
-  const lower = sorted[hFloor - 1];
-  const upper = sorted[hCeil - 1];
-  return lower + (h - hFloor) * (upper - lower);
+function addMonthsUtc(isoDate: string, months: number): Date {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(y, m - 1 + months + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(y, m - 1 + months, Math.min(d, lastDay)));
 }
 
-export function checkEligibility(
-  van: Van,
-  vanMetrics: VanMetrics,
-  evModel: EVModel,
-  usableWltpShare: number
-): EligibilityResult {
-  // Refrigerated check
-  if (van.refrigerated) {
-    return {
-      vanId: van.vanId,
-      evModel: evModel.name,
-      eligible: false,
-      reason: "Refrigerated",
-    };
+/**
+ * Fee for leaving a diesel lease early: 0 for owned vans and for leases that end
+ * within the window after the analysis date; otherwise multiplier x monthly lease.
+ * A leased van without a lease end date is charged the fee (conservative).
+ */
+export function leaseExitFee(van: Van, analysisDate: string, windowMonths: number, multiplier: number): number {
+  if (van.ownedOrLeased !== "leased") return 0;
+  if (van.leaseEndDate) {
+    const leaseEnd = addMonthsUtc(van.leaseEndDate, 0);
+    if (leaseEnd.getTime() <= addMonthsUtc(analysisDate, windowMonths).getTime()) return 0;
   }
-
-  // Range check
-  const maxRangeKm = evModel.wltpRangeKm * usableWltpShare;
-  const rangeFit = vanMetrics.p95DayKm <= maxRangeKm;
-  if (!rangeFit) {
-    return {
-      vanId: van.vanId,
-      evModel: evModel.name,
-      eligible: false,
-      reason: "Range",
-      rangeFit: false,
-    };
-  }
-
-  // Payload check
-  const payloadFit = vanMetrics.maxLoadKg <= evModel.payloadKg;
-  if (!payloadFit) {
-    return {
-      vanId: van.vanId,
-      evModel: evModel.name,
-      eligible: false,
-      reason: "Payload",
-      payloadFit: false,
-    };
-  }
-
-  // Depot check - handled in shortlist building
-  return {
-    vanId: van.vanId,
-    evModel: evModel.name,
-    eligible: true,
-    rangeFit: true,
-    payloadFit: true,
-  };
+  return multiplier * (van.monthlyLeasePln ?? 0);
 }
 
-export function calculateFinancial(
+export function evaluateModel(
   van: Van,
-  vanMetrics: VanMetrics,
-  evModel: EVModel,
-  dieselModels: Map<string, DieselModel>,
-  dieselPricePln: number,
-  dieselMaintenancePln: number,
-  evMaintenancePln: number,
-  nightTariffPln: number,
-  grantPercentage: number,
-  evaluationYearsMonths: number,
-  analysisDate: string,
-  leaseExitFeeMonthlyMultiplier: number,
-  leaseWindowMonths: number
-): FinancialMetrics | null {
-  const dieselModel = dieselModels.get(van.dieselModel);
-  if (!dieselModel) {
-    return null;
+  metrics: VanMetrics,
+  model: EVModel,
+  params: AnalysisParams,
+  dieselModel?: DieselModel
+): ModelEvaluation {
+  const rangeCheckKm = params.middayTopup ? metrics.p95RouteKm : metrics.p95DayKm;
+  const usableRangeKm = params.usableWltpShare * model.wltpRangeKm;
+  const rangeOk = rangeCheckKm <= usableRangeKm;
+  const payloadOk = metrics.maxLoadKg <= model.payloadKg;
+  const evNetCostPln = model.purchasePricePln * (1 - params.grantShare);
+  const leaseExitFeePln = leaseExitFee(van, params.analysisDate, params.leaseWindowMonths, params.leaseExitFeeMonths);
+
+  let annualFuelSavingPln: number | null = null;
+  let annualOperatingSavingPln: number | null = null;
+  let savingPln: number | null = null;
+  if (dieselModel) {
+    const dieselFuelPerKm = (dieselModel.fuelUseLper100km / 100) * params.dieselPricePln;
+    const evChargingPerKm = (model.energyKwhPer100km / 100) * params.nightTariffPln;
+    annualFuelSavingPln = Math.round(metrics.annualKm * (dieselFuelPerKm - evChargingPerKm));
+    annualOperatingSavingPln =
+      metrics.annualKm *
+      (dieselFuelPerKm + params.dieselMaintenancePln - (evChargingPerKm + params.evMaintenancePln));
+    savingPln = Math.round(params.evaluationYears * annualOperatingSavingPln - evNetCostPln - leaseExitFeePln);
   }
-
-  const dieselFuelCostPerKm = (dieselModel.fuelUseLper100km / 100) * dieselPricePln;
-  const evChargingCostPerKm = (evModel.energyKwhPer100km / 100) * nightTariffPln;
-
-  const annualFuelSavingPln = Math.round(
-    vanMetrics.annualKm * (dieselFuelCostPerKm - evChargingCostPerKm)
-  );
-
-  const annualOperatingSavingPln =
-    vanMetrics.annualKm *
-    ((dieselFuelCostPerKm + dieselMaintenancePln) -
-      (evChargingCostPerKm + evMaintenancePln));
-
-  const evNetCostPln = evModel.purchasePricePln * (1 - grantPercentage);
-
-  // Calculate diesel lease exit fee
-  let leaseExitFeePln = 0;
-  if (van.ownedOrLeased === "leased" && van.leaseEndDate && van.monthlyLeasePln) {
-    const leaseEnd = new Date(van.leaseEndDate);
-    const analysis = new Date(analysisDate);
-    const monthsUntilEnd = (leaseEnd.getFullYear() - analysis.getFullYear()) * 12 +
-      (leaseEnd.getMonth() - analysis.getMonth());
-
-    if (monthsUntilEnd > leaseWindowMonths) {
-      leaseExitFeePln = van.monthlyLeasePln * leaseExitFeeMonthlyMultiplier;
-    }
-  }
-
-  const savingPln = Math.round(
-    evaluationYearsMonths * annualOperatingSavingPln - evNetCostPln - leaseExitFeePln
-  );
 
   return {
-    vanId: van.vanId,
-    evModel: evModel.name,
-    dieselFuelCostPerKm,
-    evChargingCostPerKm,
+    evModel: model.name,
+    rangeCheckKm,
+    usableRangeKm,
+    rangeOk,
+    payloadOk,
     annualFuelSavingPln,
     annualOperatingSavingPln,
     evNetCostPln,
     leaseExitFeePln,
     savingPln,
+    eligible: rangeOk && payloadOk && savingPln !== null,
   };
 }
 
-export interface CapConfig {
-  grantCap: number;
-  chargingPointsNorth: number;
-  southRebaseCap: number;
+const sharePct = (params: AnalysisParams): number => Math.round(params.usableWltpShare * 10000) / 100;
+const rangeLabel = (params: AnalysisParams): string =>
+  `P${params.rangePercentile} ${params.middayTopup ? "route" : "day"}`;
+
+/** Evaluates one van against every EV model and applies the pre-shortlist exclusions. */
+export function evaluateVan(van: Van, metrics: VanMetrics, params: AnalysisParams): VanEvaluation {
+  const dieselModel = params.dieselModels.find((m) => m.name === van.dieselModel);
+  const models = params.evModels.map((model) => evaluateModel(van, metrics, model, params, dieselModel));
+  const evDepot = van.depot === "South" && params.chargingPointsSouth <= 0 ? "North" : van.depot;
+
+  let bestModel: ModelEvaluation | null = null;
+  for (const m of models) {
+    if (m.eligible && (bestModel === null || m.savingPln! > bestModel.savingPln!)) {
+      bestModel = m;
+    }
+  }
+
+  const evaluation: VanEvaluation = { van, metrics, models, bestModel, evDepot, status: "excluded" };
+  const exclude = (code: ExclusionCode, reason: string): VanEvaluation => ({
+    ...evaluation,
+    bestModel: code === "negative_saving" ? bestModel : null,
+    exclusionCode: code,
+    exclusionReason: reason,
+  });
+
+  if (params.excludeRefrigerated && van.refrigerated) {
+    return exclude("refrigerated", "Refrigerated van: fridge vans are out for year 1");
+  }
+  if (!dieselModel) {
+    return exclude("unknown_diesel_model", `Diesel model "${van.dieselModel}" is not in the diesel models table`);
+  }
+  if (metrics.tripCount === 0) {
+    return exclude("no_trips", "No trips in the export");
+  }
+  const rangeCheckKm = params.middayTopup ? metrics.p95RouteKm : metrics.p95DayKm;
+  if (!models.some((m) => m.rangeOk)) {
+    const best = Math.max(0, ...models.map((m) => m.usableRangeKm));
+    return exclude(
+      "range",
+      `${rangeLabel(params)} ${rangeCheckKm} km exceeds ${sharePct(params)}% of every EV model's range (max ${Math.round(best)} km)`
+    );
+  }
+  if (bestModel === null) {
+    return exclude("payload", `Max load ${metrics.maxLoadKg} kg exceeds the payload of every EV model that fits the range`);
+  }
+  if (bestModel.savingPln! <= 0) {
+    return exclude(
+      "negative_saving",
+      `Best saving with ${bestModel.evModel} is ${bestModel.savingPln} PLN over ${params.evaluationYears} years (not positive)`
+    );
+  }
+  return evaluation;
 }
 
-export function buildShortlist(
-  eligibleVans: Array<{
-    van: Van;
-    metrics: VanMetrics;
-    financials: FinancialMetrics;
-    evModel: EVModel;
-  }>,
-  capConfig: CapConfig
-): ShortlistEntry[] {
-  // Filter to positive savings
-  const candidates = eligibleVans
-    .filter((item) => item.financials.savingPln > 0)
+function shortlistReason(evaluation: VanEvaluation, params: AnalysisParams): string {
+  const { van, bestModel, evDepot } = evaluation;
+  const best = bestModel!;
+  const ownership = van.ownedOrLeased === "owned" ? "Owned" : "Leased";
+  const rebased = van.depot !== evDepot ? ` re-based to ${evDepot}` : "";
+  return `${ownership} ${van.depot} van${rebased}, ${rangeLabel(params)} ${best.rangeCheckKm} km fits ${sharePct(params)}% of ${best.evModel} range, saves ${best.savingPln!.toLocaleString("en-US")} PLN over ${params.evaluationYears} years`;
+}
+
+/**
+ * Walks the candidates (no exclusion code yet) by saving and applies the caps.
+ * Updates status, rank and exclusion reason on the evaluations in place.
+ */
+export function buildShortlist(evaluations: VanEvaluation[], params: AnalysisParams): ShortlistEntry[] {
+  const candidates = evaluations
+    .filter((e) => e.exclusionCode === undefined && e.bestModel !== null && e.bestModel.savingPln! > 0)
     .sort((a, b) => {
-      if (b.financials.savingPln !== a.financials.savingPln) {
-        return b.financials.savingPln - a.financials.savingPln;
-      }
-      if (b.metrics.annualKm !== a.metrics.annualKm) {
-        return b.metrics.annualKm - a.metrics.annualKm;
-      }
+      const diff = b.bestModel!.savingPln! - a.bestModel!.savingPln!;
+      if (diff !== 0) return diff;
+      if (b.metrics.annualKm !== a.metrics.annualKm) return b.metrics.annualKm - a.metrics.annualKm;
       return a.van.vanId.localeCompare(b.van.vanId);
     });
 
   const shortlist: ShortlistEntry[] = [];
-  let grantCount = 0;
-  let northChargingCount = 0;
-  let southRebaseCount = 0;
+  const pointsUsed = { North: 0, South: 0 };
+  const pointsAvailable = { North: params.chargingPointsNorth, South: params.chargingPointsSouth };
+  let rebased = 0;
 
-  for (const item of candidates) {
-    const isRebasedSouth = item.van.depot === "South";
-    const wouldExceedGrantCap = grantCount >= capConfig.grantCap;
-    const wouldExceedChargingCap = northChargingCount >= capConfig.chargingPointsNorth;
-    const wouldExceedSouthRebaseCap = isRebasedSouth && southRebaseCount >= capConfig.southRebaseCap;
-
-    if (wouldExceedGrantCap || wouldExceedChargingCap || wouldExceedSouthRebaseCap) {
-      // This van is skipped but we don't add it to results per spec
-      continue;
-    }
-
-    const evDepot = isRebasedSouth ? "North" : item.van.depot;
-    const reason = `${item.van.ownedOrLeased === "owned" ? "Owned" : "Leased"} ${evDepot} van, P95 day ${item.metrics.p95DayKm} km fits 60% of ${item.evModel.name} range, saves ${item.financials.savingPln.toLocaleString("en")} PLN over ${Math.round(item.financials.evNetCostPln / item.financials.annualOperatingSavingPln)} years`;
-
-    shortlist.push({
-      rank: shortlist.length + 1,
-      vanId: item.van.vanId,
-      evModel: item.evModel.name,
-      evDepot,
-      rangeCheckKm: item.metrics.p95DayKm,
-      annualKm: item.metrics.annualKm,
-      annualFuelSavingPln: item.financials.annualFuelSavingPln,
-      savingPln: item.financials.savingPln,
-      reason,
-    });
-
-    grantCount++;
-    northChargingCount++;
-    if (isRebasedSouth) {
-      southRebaseCount++;
+  for (const e of candidates) {
+    const needsRebase = e.van.depot !== e.evDepot;
+    if (needsRebase && rebased >= params.southRebaseCap) {
+      e.exclusionCode = "south_cap";
+      e.exclusionReason = `Skipped: South re-base cap of ${params.southRebaseCap} vans reached`;
+    } else if (shortlist.length >= params.grantCap) {
+      e.exclusionCode = "grant_cap";
+      e.exclusionReason = `Skipped: grant cap of ${params.grantCap} EVs reached`;
+    } else if (pointsUsed[e.evDepot] >= pointsAvailable[e.evDepot]) {
+      e.exclusionCode = "charger_cap";
+      e.exclusionReason = `Skipped: all ${pointsAvailable[e.evDepot]} ${e.evDepot} charging points taken`;
+    } else {
+      pointsUsed[e.evDepot]++;
+      if (needsRebase) rebased++;
+      e.status = "shortlisted";
+      e.rank = shortlist.length + 1;
+      const best = e.bestModel!;
+      shortlist.push({
+        rank: e.rank,
+        vanId: e.van.vanId,
+        evModel: best.evModel,
+        evDepot: e.evDepot,
+        rangeCheckKm: best.rangeCheckKm,
+        annualKm: e.metrics.annualKm,
+        annualFuelSavingPln: best.annualFuelSavingPln!,
+        savingPln: best.savingPln!,
+        reason: shortlistReason(e, params),
+      });
     }
   }
 
   return shortlist;
 }
 
-export function analyzeFleet(
-  vans: Van[],
-  cleanedTrips: Trip[],
-  exportWeeks: number,
-  dieselModels: Map<string, DieselModel>,
-  dieselPricePln: number,
-  dieselMaintenancePln: number,
-  evModels: EVModel[],
-  evMaintenancePln: number,
-  nightTariffPln: number,
-  grantPercentage: number,
-  evaluationYears: number,
-  analysisDate: string,
-  capConfig: CapConfig,
-  usableWltpShare: number
-): AnalysisResult {
-  const vanMetrics = calculateVanMetrics(vans, cleanedTrips, exportWeeks);
-
-  // Calculate financial metrics for all van-EV combinations
-  const eligibleVans: Array<{
-    van: Van;
-    metrics: VanMetrics;
-    financials: FinancialMetrics;
-    evModel: EVModel;
-  }> = [];
-
-  for (const van of vans) {
-    const metrics = vanMetrics.get(van.vanId)!;
-    let bestFinancial: FinancialMetrics | null = null;
-    let bestEvModel: EVModel | null = null;
-
-    for (const evModel of evModels) {
-      const eligibility = checkEligibility(van, metrics, evModel, usableWltpShare);
-      if (!eligibility.eligible) {
-        continue;
-      }
-
-      const financial = calculateFinancial(
-        van,
-        metrics,
-        evModel,
-        dieselModels,
-        dieselPricePln,
-        dieselMaintenancePln,
-        evMaintenancePln,
-        nightTariffPln,
-        grantPercentage,
-        evaluationYears,
-        analysisDate,
-        3, // leaseExitFeeMonthlyMultiplier
-        12 // leaseWindowMonths
-      );
-
-      if (financial && (!bestFinancial || financial.savingPln > bestFinancial.savingPln)) {
-        bestFinancial = financial;
-        bestEvModel = evModel;
-      }
-    }
-
-    if (bestFinancial && bestEvModel) {
-      eligibleVans.push({
-        van,
-        metrics,
-        financials: bestFinancial,
-        evModel: bestEvModel,
-      });
-    }
-  }
-
-  const shortlist = buildShortlist(eligibleVans, capConfig);
-
-  // Calculate summary
-  let totalAnnualFuelSavingPln = 0;
-  let totalSavingPln = 0;
-  for (const entry of shortlist) {
-    totalAnnualFuelSavingPln += entry.annualFuelSavingPln;
-    totalSavingPln += entry.savingPln;
-  }
+export function analyzeFleet(vans: Van[], cleaning: CleaningResult, params: AnalysisParams): AnalysisResult {
+  const vanMetrics = calculateVanMetrics(vans, cleaning.trips, params.exportWeeks, params.rangePercentile);
+  const evaluations = vans.map((van) => evaluateVan(van, vanMetrics.get(van.vanId)!, params));
+  const shortlist = buildShortlist(evaluations, params);
 
   return {
-    cleaningResult: {
-      trips: cleanedTrips,
-      rowsRead: 0, // Will be set by caller
-      exactDuplicatesRemoved: 0, // Will be set by caller
-      odometerRepairs: 0, // Will be set by caller
-      invalidRowsRemoved: 0, // Will be set by caller
-      unknownVanIds: [],
-    },
+    cleaningResult: cleaning,
     vans,
     vanMetrics,
+    evaluations,
+    rangeBasis: params.middayTopup ? "route" : "day",
     checkFigures: {
       vansAssessed: vans.length,
-      tripsCounted: cleanedTrips.length,
-      totalKm: Math.round(cleanedTrips.reduce((sum, trip) => sum + trip.distanceKm, 0)),
+      tripsCounted: cleaning.trips.length,
+      totalKm: Math.round(cleaning.trips.reduce((sum, trip) => sum + trip.distanceKm, 0)),
     },
     shortlist,
     summary: {
       recommendedCount: shortlist.length,
-      annualFuelSavingPln: totalAnnualFuelSavingPln,
-      savingPln: totalSavingPln,
+      annualFuelSavingPln: shortlist.reduce((sum, s) => sum + s.annualFuelSavingPln, 0),
+      savingPln: shortlist.reduce((sum, s) => sum + s.savingPln, 0),
     },
   };
 }
@@ -550,8 +563,8 @@ export function formatCsvValue(value: string | number | null | undefined): strin
     return "";
   }
   const str = String(value);
-  if (str.includes(",")) {
-    return `"${str}"`;
+  if (/[",\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
 }
