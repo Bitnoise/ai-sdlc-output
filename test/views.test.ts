@@ -5,7 +5,9 @@ describe("views", () => {
     const html = homePage();
 
     expect(html).toContain("<h1>Welcome!</h1>");
-    expect(html).toContain("FUURIAAAgit pull origin mastergit pull origin master");
-    expect(html).toContain("Welcome home!");
+    expect(html).toContain("Sign in to your account to get started");
+    expect(html).toContain('<input type="email"');
+    expect(html).toContain('<input type="password"');
+    expect(html).toContain("<button type=\"submit\">Sign In</button>");
   });
 });

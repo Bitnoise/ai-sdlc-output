@@ -31,7 +31,11 @@ export function homePage(): string {
   return layout(
     "Welcome",
     `<h1>Welcome!</h1>
-     <p>FUURIAAAgit pull origin mastergit pull origin master</p>
-     <p>Welcome home!</p>`,
+     <p>Sign in to your account to get started</p>
+     <form>
+       <input type="email" placeholder="Email" required>
+       <input type="password" placeholder="Password" required>
+       <button type="submit">Sign In</button>
+     </form>`,
   );
 }

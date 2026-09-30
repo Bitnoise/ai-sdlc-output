@@ -12,7 +12,7 @@ A small TypeScript + Express web application. It shows a public home page and ha
 
 ## How the application works
 
-The home page displays a Welcome header followed by a line of text "FUURIAAAgit pull origin mastergit pull origin master" and then a welcome message.
+The home page displays a Welcome header with an explanation to sign in, and includes a simple login form with email and password input fields for user authentication.
 
 ## Tech Stack
 
