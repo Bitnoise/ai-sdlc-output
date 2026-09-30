@@ -103,7 +103,7 @@ export interface AnalysisResult {
 }
 
 export function cleanTrips(
-  rawTrips: any[],
+  rawTrips: Array<Record<string, unknown>>,
   vanIds: Set<string>,
   aliasMap: Map<string, string>
 ): CleaningResult {
@@ -125,7 +125,7 @@ export function cleanTrips(
     seen.add(signature);
 
     // Remap van ID via alias
-    let vanId = row.van_id?.toString().trim();
+    const vanId = row.van_id?.toString().trim();
     if (!vanId) {
       invalidRowsRemoved++;
       continue;
@@ -139,10 +139,10 @@ export function cleanTrips(
     }
 
     // Determine distance: prefer odometer_km, fallback to gps_km
-    let distanceKm: number | null = null;
-    const odometerKm = parseFloat(row.odometer_km);
-    const gpsKm = parseFloat(row.gps_km);
+    const odometerKm = parseFloat(String(row.odometer_km));
+    const gpsKm = parseFloat(String(row.gps_km));
 
+    let distanceKm: number;
     if (!isNaN(odometerKm) && odometerKm > 0) {
       distanceKm = odometerKm;
     } else if (!isNaN(gpsKm) && gpsKm > 0) {
@@ -153,10 +153,10 @@ export function cleanTrips(
       continue;
     }
 
-    const maxLoadKg = parseFloat(row.max_load_kg) || 0;
+    const maxLoadKg = parseFloat(String(row.max_load_kg)) || 0;
 
     cleanedTrips.push({
-      date: row.date?.toString().trim(),
+      date: String(row.date).trim(),
       vanId: remappedId,
       distanceKm,
       maxLoadKg,
@@ -412,11 +412,6 @@ export function buildShortlist(
     const wouldExceedSouthRebaseCap = isRebasedSouth && southRebaseCount >= capConfig.southRebaseCap;
 
     if (wouldExceedGrantCap || wouldExceedChargingCap || wouldExceedSouthRebaseCap) {
-      // Determine reason for skipping
-      let skipReason = "Charger cap";
-      if (wouldExceedGrantCap) skipReason = "Grant cap";
-      if (wouldExceedSouthRebaseCap) skipReason = "South cap";
-
       // This van is skipped but we don't add it to results per spec
       continue;
     }
@@ -550,7 +545,7 @@ export function analyzeFleet(
   };
 }
 
-export function formatCsvValue(value: any): string {
+export function formatCsvValue(value: string | number | null | undefined): string {
   if (value === null || value === undefined) {
     return "";
   }
