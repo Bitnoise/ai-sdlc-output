@@ -275,7 +275,38 @@ describe("exclusion reasons", () => {
     expect(on.rangeBasis).toBe("route");
     expect(on.evaluations[0].models[0].rangeCheckKm).toBe(130);
     expect(on.evaluations[0].status).toBe("shortlisted");
-    expect(on.shortlist[0].reason).toContain("P95 route 130 km");
+    expect(on.shortlist[0].reason).toContain("worst route 130 km");
+
+    const oldRule = runSynthetic([van("P-01")], rows, { middayTopup: true, rangeRule: "percentile" });
+    expect(oldRule.shortlist[0].reason).toContain("P95 route 130 km");
+  });
+});
+
+describe("worst-day range rule", () => {
+  // 19 days at 150 km and one day at 240 km: P95 day 154.5 km fits 60% of 260 (156), the worst day does not.
+  const rows = Array.from({ length: 20 }, (_, i) =>
+    trip("P-01", `2026-07-${String(i + 1).padStart(2, "0")}`, i === 0 ? 240 : 150)
+  );
+
+  it("is the default and excludes a van whose worst day exceeds 60% of every EV's range", () => {
+    expect(DEFAULT_PARAMS.rangeRule).toBe("worst_day");
+    const r = runSynthetic([van("P-01")], rows);
+    const e = r.evaluations[0];
+    expect(e.metrics.p95DayKm).toBe(154.5);
+    expect(e.models[0].rangeCheckKm).toBe(240);
+    expect(e.exclusionCode).toBe("range");
+    expect(e.exclusionReason).toContain("worst day 240 km exceeds 60%");
+  });
+
+  it("shortlists the same van under the old percentile rule", () => {
+    const r = runSynthetic([van("P-01")], rows, { rangeRule: "percentile" });
+    expect(r.evaluations[0].status).toBe("shortlisted");
+    expect(r.shortlist[0].reason).toContain("P95 day 154.5 km");
+  });
+
+  it("writes the worst day in the shortlist reason", () => {
+    const r = runSynthetic([van("P-01")], week("P-01", 150));
+    expect(r.shortlist[0].reason).toContain("worst day 150 km fits 60% of Volta Cargo S range");
   });
 });
 
@@ -320,7 +351,7 @@ describe("CSV formatting", () => {
     annualKm: 12000,
     annualFuelSavingPln: 4320,
     savingPln: 21710,
-    reason: "Owned North van, P95 day 145 km fits 60% of Volta Cargo S range, saves 21,710 PLN over 5 years",
+    reason: "Owned North van, worst day 145 km fits 60% of Volta Cargo S range, saves 21,710 PLN over 5 years",
   };
 
   it("writes shortlist columns in order with dot decimals and no thousands separators", () => {
@@ -416,6 +447,13 @@ describe("generateAssumptions", () => {
       expect(all).toContain(expected);
     }
     expect(lines.every((l) => !l.includes("\n"))).toBe(true);
+  });
+
+  it("states the dropped P95 rule and the 60% worst-day rule", () => {
+    const all = text(params());
+    expect(all).toContain("P95-of-daily-km rule used for the lunch preview is dropped");
+    expect(all).toContain("worst day in the data fits within 60% of the EV's WLTP range");
+    expect(text(params({ rangeRule: "percentile" }))).not.toContain("lunch preview is dropped");
   });
 
   it("follows changed parameters", () => {

@@ -1,4 +1,4 @@
-import { analyzeFleet, cleanTrips, deriveExportWeeks, formatCsvValue, generateAssumptions, generateAssumptionsMd, usableKm, type AnalysisParams, type DieselModel, type EVModel, type AnalysisResult, type CleaningResult, type Van, generateShortlistCsv, generateSummaryCsv } from './engine';
+import { analyzeFleet, cleanTrips, deriveExportWeeks, formatCsvValue, generateAssumptions, generateAssumptionsMd, rangeCheckKm, usableKm, type AnalysisParams, type RangeRule, type DieselModel, type EVModel, type AnalysisResult, type CleaningResult, type Van, generateShortlistCsv, generateSummaryCsv } from './engine';
 import { combineTripFiles, findUnknownVanIds, missingColumns, normalizedTripsCsv, normalizedVansCsv, normalizeHeaders, REQUIRED_TRIP_COLUMNS, REQUIRED_VAN_COLUMNS, TRIP_HEADER_ALIASES, tripDateSpan, VAN_HEADER_ALIASES, type HeaderRename } from './ingest';
 import Papa from 'papaparse';
 
@@ -15,6 +15,7 @@ interface AppState {
   chargingPointsNorth: number;
   chargingPointsSouth: number;
   maxSouthRebase: number;
+  rangeRule: RangeRule;
   rangePercentile: number;
   usableWltpShare: number;
   midDayTopup: boolean;
@@ -77,6 +78,7 @@ const DEFAULT_STATE: AppState = {
   chargingPointsNorth: 10,
   chargingPointsSouth: 0,
   maxSouthRebase: 3,
+  rangeRule: 'worst_day',
   rangePercentile: 95,
   usableWltpShare: 60,
   midDayTopup: false,
@@ -125,6 +127,7 @@ function buildParams(): AnalysisParams {
     chargingPointsNorth: appState.chargingPointsNorth,
     chargingPointsSouth: appState.chargingPointsSouth,
     southRebaseCap: appState.maxSouthRebase,
+    rangeRule: appState.rangeRule,
     rangePercentile: appState.rangePercentile,
     usableWltpShare: appState.usableWltpShare / 100,
     middayTopup: appState.midDayTopup,
@@ -153,6 +156,7 @@ function buildSettings() {
     chargingPointsNorth: appState.chargingPointsNorth,
     chargingPointsSouth: appState.chargingPointsSouth,
     maxSouthRebase: appState.maxSouthRebase,
+    rangeRule: appState.rangeRule,
     rangePercentile: appState.rangePercentile,
     usableWltpShare: appState.usableWltpShare,
     midDayTopup: appState.midDayTopup,
@@ -366,10 +370,18 @@ function renderForm(): void {
         <!-- Range Rule Section -->
         <section class="form-section">
           <h2>Range Rule</h2>
+          <p class="range-basis-note">Default: worst day in the data within 60% of WLTP range</p>
           <div class="form-row">
             <div class="form-col">
+              <label>Range check:</label>
+              <select id="rangeRule">
+                <option value="worst_day" ${appState.rangeRule === 'worst_day' ? 'selected' : ''}>Worst day (Ops rule)</option>
+                <option value="percentile" ${appState.rangeRule === 'percentile' ? 'selected' : ''}>Percentile (old rule)</option>
+              </select>
+            </div>
+            <div class="form-col">
               <label>Percentile:</label>
-              <input type="number" id="rangePercentile" step="1" value="${appState.rangePercentile}" />
+              <input type="number" id="rangePercentile" step="1" value="${appState.rangePercentile}" ${appState.rangeRule === 'percentile' ? '' : 'disabled'} />
             </div>
             <div class="form-col">
               <label>Usable WLTP Share (%):</label>
@@ -522,6 +534,11 @@ function attachEventListeners(): void {
   });
 
   // Range rule
+  document.getElementById('rangeRule')?.addEventListener('change', (e) => {
+    appState.rangeRule = (e.target as HTMLSelectElement).value === 'percentile' ? 'percentile' : 'worst_day';
+    const percentileInput = document.getElementById('rangePercentile') as HTMLInputElement | null;
+    if (percentileInput) percentileInput.disabled = appState.rangeRule !== 'percentile';
+  });
   document.getElementById('rangePercentile')?.addEventListener('change', (e) => {
     appState.rangePercentile = parseInt((e.target as HTMLInputElement).value, 10);
   });
@@ -775,6 +792,8 @@ function attachEventListeners(): void {
         appState.chargingPointsNorth = data.chargingPointsNorth ?? DEFAULT_STATE.chargingPointsNorth;
         appState.chargingPointsSouth = data.chargingPointsSouth ?? DEFAULT_STATE.chargingPointsSouth;
         appState.maxSouthRebase = data.maxSouthRebase ?? DEFAULT_STATE.maxSouthRebase;
+        // Older settings files have no rangeRule; they get the Ops worst-day rule.
+        appState.rangeRule = data.rangeRule === 'percentile' ? 'percentile' : 'worst_day';
         appState.rangePercentile = data.rangePercentile ?? DEFAULT_STATE.rangePercentile;
         appState.usableWltpShare = data.usableWltpShare ?? DEFAULT_STATE.usableWltpShare;
         appState.midDayTopup = data.midDayTopup ?? DEFAULT_STATE.midDayTopup;
@@ -886,6 +905,7 @@ function renderResults(): void {
         <td>${escapeHtml(van.leaseEndDate || '—')}</td>
         <td>${metrics.p95DayKm.toFixed(1)}</td>
         <td>${metrics.maxDayKm.toFixed(1)}</td>
+        <td>${rangeCheckKm(metrics, params).toFixed(1)}</td>
         <td>${metrics.maxLoadKg}</td>
         <td>${metrics.annualKm}</td>
         ${e.models.map(m => `<td>${yesNo(m.rangeOk)}</td><td>${yesNo(m.payloadOk)}</td><td>${m.savingPln ?? '—'}</td>`).join('')}
@@ -979,6 +999,7 @@ function renderResults(): void {
                   <th>Lease End</th>
                   <th>P95 Day km</th>
                   <th>Max Day km</th>
+                  <th>Range check km</th>
                   <th>Max Load</th>
                   <th>Annual km</th>
                   ${evModelHeaders}
