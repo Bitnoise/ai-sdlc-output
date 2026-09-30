@@ -1,4 +1,4 @@
-import { formatCsvValue, resolveVanId } from "./engine";
+import { formatCsvValue, resolveVanId } from "./engine.js";
 
 export type CsvRow = Record<string, unknown>;
 
