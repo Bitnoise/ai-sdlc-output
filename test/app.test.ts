@@ -36,6 +36,13 @@ describe("GET /", () => {
     expect(res.text).toContain("several trip files are combined");
   });
 
+  it("states the Ops worst-day range rule", async () => {
+    const res = await request(app).get("/");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("worst day fits within 60% of the EV WLTP range");
+  });
+
   describe("with a built client", () => {
     let dir: string;
 

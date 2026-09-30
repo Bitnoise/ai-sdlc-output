@@ -43,6 +43,8 @@ export interface AnalysisParams {
   chargingPointsNorth: number;
   chargingPointsSouth: number;
   southRebaseCap: number;
+  // worst_day = Ops rule (highest day/route in the data); percentile = the old P95 rule.
+  rangeRule: RangeRule;
   rangePercentile: number;
   usableWltpShare: number; // 0-1
   middayTopup: boolean;
@@ -54,6 +56,8 @@ export interface AnalysisParams {
   exportWeeks: number;
   aliasList: VanAlias[];
 }
+
+export type RangeRule = "worst_day" | "percentile";
 
 export interface VanAlias {
   from: string;
@@ -79,6 +83,7 @@ export const DEFAULT_PARAMS: AnalysisParams = {
   chargingPointsNorth: 10,
   chargingPointsSouth: 0,
   southRebaseCap: 3,
+  rangeRule: "worst_day",
   rangePercentile: 95,
   usableWltpShare: 0.6,
   middayTopup: false,
@@ -405,6 +410,14 @@ export function leaseExitFee(van: Van, analysisDate: string, windowMonths: numbe
   return multiplier * (van.monthlyLeasePln ?? 0);
 }
 
+/** The km a van must cover on one charge under the chosen range rule. */
+export function rangeCheckKm(metrics: VanMetrics, params: AnalysisParams): number {
+  if (params.rangeRule === "percentile") {
+    return params.middayTopup ? metrics.p95RouteKm : metrics.p95DayKm;
+  }
+  return params.middayTopup ? metrics.maxRouteKm : metrics.maxDayKm;
+}
+
 export function evaluateModel(
   van: Van,
   metrics: VanMetrics,
@@ -412,9 +425,9 @@ export function evaluateModel(
   params: AnalysisParams,
   dieselModel?: DieselModel
 ): ModelEvaluation {
-  const rangeCheckKm = params.middayTopup ? metrics.p95RouteKm : metrics.p95DayKm;
+  const checkKm = rangeCheckKm(metrics, params);
   const usableRangeKm = params.usableWltpShare * model.wltpRangeKm;
-  const rangeOk = rangeCheckKm <= usableRangeKm;
+  const rangeOk = checkKm <= usableRangeKm;
   const payloadOk = metrics.maxLoadKg <= model.payloadKg;
   const evNetCostPln = model.purchasePricePln * (1 - params.grantShare);
   const leaseExitFeePln = leaseExitFee(van, params.analysisDate, params.leaseWindowMonths, params.leaseExitFeeMonths);
@@ -434,7 +447,7 @@ export function evaluateModel(
 
   return {
     evModel: model.name,
-    rangeCheckKm,
+    rangeCheckKm: checkKm,
     usableRangeKm,
     rangeOk,
     payloadOk,
@@ -450,7 +463,7 @@ export function evaluateModel(
 const pct = (share: number): number => Math.round(share * 10000) / 100;
 const sharePct = (params: AnalysisParams): number => pct(params.usableWltpShare);
 const rangeLabel = (params: AnalysisParams): string =>
-  `P${params.rangePercentile} ${params.middayTopup ? "route" : "day"}`;
+  `${params.rangeRule === "percentile" ? `P${params.rangePercentile}` : "worst"} ${params.middayTopup ? "route" : "day"}`;
 
 /** Evaluates one van against every EV model and applies the pre-shortlist exclusions. */
 export function evaluateVan(van: Van, metrics: VanMetrics, params: AnalysisParams): VanEvaluation {
@@ -482,12 +495,12 @@ export function evaluateVan(van: Van, metrics: VanMetrics, params: AnalysisParam
   if (metrics.tripCount === 0) {
     return exclude("no_trips", "No trips in the export");
   }
-  const rangeCheckKm = params.middayTopup ? metrics.p95RouteKm : metrics.p95DayKm;
+  const checkKm = rangeCheckKm(metrics, params);
   if (!models.some((m) => m.rangeOk)) {
     const best = Math.max(0, ...models.map((m) => m.usableRangeKm));
     return exclude(
       "range",
-      `${rangeLabel(params)} ${rangeCheckKm} km exceeds ${sharePct(params)}% of every EV model's range (max ${Math.round(best)} km)`
+      `${rangeLabel(params)} ${checkKm} km exceeds ${sharePct(params)}% of every EV model's range (max ${Math.round(best)} km)`
     );
   }
   if (bestModel === null) {
@@ -660,7 +673,14 @@ export function generateAssumptions(params: AnalysisParams): string[] {
       ? "Midday top-up allowed: range checked per route, not per day."
       : "A van's day is the sum of all its routes on that date (double-route days summed); no midday top-up between routes.",
     "Only dates on which the van actually drove count as days.",
-    `Range check = P${params.rangePercentile} of the van's ${params.middayTopup ? "route" : "daily"} km (linear interpolation, like Excel PERCENTILE.INC), 1 decimal.`,
+    params.rangeRule === "percentile"
+      ? `Range check = P${params.rangePercentile} of the van's ${params.middayTopup ? "route" : "daily"} km (linear interpolation, like Excel PERCENTILE.INC), 1 decimal.`
+      : `Range check = worst ${params.middayTopup ? "route" : "day"}: the van's highest ${params.middayTopup ? "single-route" : "daily (routes summed)"} km in the data, 1 decimal.`,
+    ...(params.rangeRule === "percentile"
+      ? []
+      : [
+          `Range rule changed by Ops: the P${params.rangePercentile}-of-daily-km rule used for the lunch preview is dropped; a van now qualifies only if its worst day in the data fits within ${usable}% of the EV's WLTP range (whole fleet).`,
+        ]),
     "Max load = the heaviest max_load_kg the van carried in the export.",
     `Annual km = van's total cleaned km / ${params.exportWeeks} export weeks x 52, integer.`,
     params.excludeRefrigerated
