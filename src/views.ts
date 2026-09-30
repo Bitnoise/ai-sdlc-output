@@ -97,6 +97,7 @@ export function homePage(email: string): string {
     "Welcome",
     `<h1>Welcome!</h1>
      <p>You are logged in as <strong>${escapeHtml(email)}</strong>.</p>
+     <p>Welcome home!</p>
      <form method="post" action="/logout"><button type="submit">Log out</button></form>`,
   );
 }
