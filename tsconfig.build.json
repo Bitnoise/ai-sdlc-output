@@ -1,8 +1,15 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    // The server runs in Node as an ES module ("type": "module"): NodeNext makes tsc require
+    // ".js" in relative imports, which Node needs. The browser code (main.ts) is built by Vite.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES2022"],
     "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/main.ts"]
 }

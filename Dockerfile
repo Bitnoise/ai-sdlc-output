@@ -4,7 +4,8 @@ COPY package*.json ./
 RUN npm ci
 COPY tsconfig*.json ./
 COPY src ./src
-COPY index.html ./
+COPY index.html vite.config.ts ./
+# vite.config.ts must be here: without it Vite builds into dist/ and empties it, which deletes dist/server.js.
 RUN npm run build
 
 FROM node:22-alpine
