@@ -31,6 +31,7 @@ export function homePage(): string {
   return layout(
     "Welcome",
     `<h1>Welcome!</h1>
+     <p>FUURIAAAgit pull origin mastergit pull origin master</p>
      <p>Welcome home!</p>`,
   );
 }
